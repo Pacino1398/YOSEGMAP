@@ -13,12 +13,8 @@ python tools/ros2_map_viewer.py --occ-topic /octomap/occupancy --cloud-topic /oc
 
 ==================================================================
 
-sudo watch -n 1 "
-echo '=== RKNPU Status ===' && 
-echo -n 'Load: ' && cat /sys/kernel/debug/rknpu/load && 
-echo -n 'Freq: ' && cat /sys/kernel/debug/rknpu/freq && 
-echo -n 'FPS:  ' && cat /sys/kernel/debug/rknpu/fps 2>/dev/null || echo 'FPS: N/A (Run an app first)'
-"
+sudo watch -n1 'echo "=== RKNPU Status ==="; for k in load freq fps; do p=/sys/kernel/debug/rknpu/$k; printf "%s: " "${k^^}"; [ -r "$p" ] && cat "$p" || { [ "$k" = fps ] && echo "N/A (Run an app first)" || echo "N/A"; }; done'
+
 ==================================================================
 
 1) 先用本地图片验证

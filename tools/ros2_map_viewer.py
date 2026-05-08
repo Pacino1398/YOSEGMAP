@@ -19,6 +19,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window", type=str, default="octomap_2p5d_view", help="OpenCV window name.")
     parser.add_argument("--scale", type=int, default=6, help="Display scale factor.")
     parser.add_argument("--show-grid", action="store_true", help="Draw grid lines.")
+    parser.add_argument(
+        "--flip-y",
+        action="store_true",
+        help="Flip image vertically before display (legacy behavior).",
+    )
     return parser.parse_args()
 
 
@@ -28,6 +33,7 @@ class MapViewerNode(Node):
         self.window_name = args.window
         self.scale = max(1, int(args.scale))
         self.show_grid = bool(args.show_grid)
+        self.flip_y = bool(args.flip_y)
 
         self.latest_occ: Optional[OccupancyGrid] = None
         self.latest_cloud: Optional[PointCloud2] = None
@@ -57,7 +63,14 @@ class MapViewerNode(Node):
         return img
 
     @staticmethod
-    def _cloud_to_height_map(msg: PointCloud2, h: int, w: int, resolution: float) -> np.ndarray:
+    def _cloud_to_height_map(
+        msg: PointCloud2,
+        h: int,
+        w: int,
+        resolution: float,
+        origin_x: float,
+        origin_y: float,
+    ) -> np.ndarray:
         height_map = np.zeros((h, w), dtype=np.float32)
         if msg.point_step < 12 or not msg.data:
             return height_map
@@ -71,8 +84,8 @@ class MapViewerNode(Node):
             if offset + 12 > len(msg.data):
                 break
             px, py, pz = struct.unpack_from("<fff", msg.data, offset)
-            gx = int(px / safe_resolution)
-            gy = int(py / safe_resolution)
+            gx = int((px - origin_x) / safe_resolution)
+            gy = int((py - origin_y) / safe_resolution)
             if 0 <= gx < w and 0 <= gy < h and pz > height_map[gy, gx]:
                 height_map[gy, gx] = pz
         return height_map
@@ -85,11 +98,20 @@ class MapViewerNode(Node):
         occ_img = self._occ_to_image(occ)
         h, w = occ_img.shape
         resolution = float(occ.info.resolution) if occ.info.resolution > 0 else 1.0
+        origin_x = float(occ.info.origin.position.x)
+        origin_y = float(occ.info.origin.position.y)
 
         color = cv2.cvtColor(occ_img, cv2.COLOR_GRAY2BGR)
 
         if self.latest_cloud is not None:
-            height_map = self._cloud_to_height_map(self.latest_cloud, h, w, resolution)
+            height_map = self._cloud_to_height_map(
+                self.latest_cloud,
+                h,
+                w,
+                resolution,
+                origin_x,
+                origin_y,
+            )
             max_h = float(np.max(height_map))
             if max_h > 1e-6:
                 normalized = np.clip((height_map / max_h) * 255.0, 0, 255).astype(np.uint8)
@@ -103,7 +125,7 @@ class MapViewerNode(Node):
             for x in range(0, w, 5):
                 cv2.line(color, (x, 0), (x, h - 1), (32, 32, 32), 1)
 
-        show = cv2.flip(color, 0)
+        show = cv2.flip(color, 0) if self.flip_y else color
         if self.scale != 1:
             show = cv2.resize(show, (w * self.scale, h * self.scale), interpolation=cv2.INTER_NEAREST)
 
