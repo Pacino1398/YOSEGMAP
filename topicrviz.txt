@@ -1,11 +1,11 @@
-实时分割并发布 ROS2 2.5D 话题，再用 RViz2 
+实时分割并发布 ROS2 2.5D 话题，再用 RViz2 查看
 
 一、目标
-- 不使用 app/mapping/octomap.py 的 --mask-dir 流程
-- 不依赖 runs/segment/.../masks
+- 不使用 `app/mapping/octomap.py --mask-dir` 流程
+- 不依赖 `runs/segment/.../masks`
 - 直接发布：
-  - /octomap/occupancy (nav_msgs/OccupancyGrid)
-  - /octomap/points (sensor_msgs/PointCloud2)
+  - `/octomap/occupancy` (`nav_msgs/OccupancyGrid`)
+  - `/octomap/points` (`sensor_msgs/PointCloud2`)
 
 二、终端1：启动实时分割 + 2.5D 发布（摄像头）
 python app/planning/realtime_pathplan.py \
@@ -18,14 +18,18 @@ python app/planning/realtime_pathplan.py \
   --ros-rate 2 \
   --ros-occ-topic /octomap/occupancy \
   --ros-cloud-topic /octomap/points \
-  --z-step 0.5 \
-  --z-max-cap 12.0
+  --z-step 0.3 \
+  --z-max-cap 12.0 \
+  --xy-spread 0.15 \
+  --xy-samples 3
 
 说明：
-- 有桌面显示可加 --view
-- 无桌面环境不要加 --view
-- `--z-step` 为点云沿 Z 轴采样步长
-- `--z-max-cap` 为体素灌注的 Z 轴上限（超出会截断）
+- 有桌面显示可加 `--view`
+- 无桌面环境不要加 `--view`
+- `--z-step`：点云沿 Z 轴采样步长
+- `--z-max-cap`：体素灌注 Z 轴上限（超出截断）
+- `--xy-spread`：点云 XY 加粗半径（米）
+- `--xy-samples`：点云 XY 加粗采样边长（如 `3=3x3`）
 
 三、终端2：检查话题是否正常发布
 ros2 topic list
@@ -36,23 +40,24 @@ ros2 topic echo /octomap/points --once
 rviz2
 
 RViz2 内设置：
-1) Global Options -> Fixed Frame = map
-2) Add -> Map，Topic 选 /octomap/occupancy
-3) Add -> PointCloud2，Topic 选 /octomap/points
+1) `Global Options -> Fixed Frame = map`
+2) `Add -> Map`，Topic 选 `/octomap/occupancy`
+3) `Add -> PointCloud2`，Topic 选 `/octomap/points`
 
 PointCloud2 推荐参数：
-- Style: Points 或 Flat Squares
-- Size (m): 0.03 ~ 0.08
-- Color Transformer: AxisColor（先看 Z）
+- `Style: Flat Squares`
+- `Size (m): 0.08 ~ 0.15`
+- `Color Transformer: RGB8`（按高度着色）
 
 五、常见问题
 1) 看不到地图：
-- 检查 Fixed Frame 是否为 map
-- 检查 ros2 topic list 是否有 /octomap/occupancy 和 /octomap/points
+- 检查 Fixed Frame 是否为 `map`
+- 检查 `ros2 topic list` 是否有 `/octomap/occupancy` 和 `/octomap/points`
 
-2) 只看到一部分：
-- 调整 RViz 视角/缩放
-- PointCloud2 的 Size 适当调大
+2) 点云还是太细：
+- 增大 RViz `Size (m)`
+- 增大 `--xy-spread`（如 `0.20`）
+- 增大 `--xy-samples`（如 `5`）
 
 3) 无 runs 文件是否影响：
-- 本方案不依赖 runs/masks，可直接运行
+- 本方案不依赖 `runs/masks`，可直接运行
