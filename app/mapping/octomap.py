@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import struct
 import sys
 from dataclasses import dataclass
@@ -29,8 +30,10 @@ HOUSE_CLASS = 9
 
 
 def _to_ros_image_msg(image: np.ndarray, frame_id: str):
-    from sensor_msgs.msg import Image
-    from std_msgs.msg import Header
+    sensor_msgs_msg = importlib.import_module("sensor_msgs.msg")
+    std_msgs_msg = importlib.import_module("std_msgs.msg")
+    Image = getattr(sensor_msgs_msg, "Image")
+    Header = getattr(std_msgs_msg, "Header")
 
     if image.ndim != 2:
         raise ValueError("Only 2D grayscale images are supported for ROS2 image publishing.")
@@ -51,8 +54,10 @@ def _to_ros_image_msg(image: np.ndarray, frame_id: str):
 
 
 def _to_occupancy_grid_msg(occ2d: np.ndarray, *, frame_id: str, cell_size: float):
-    from nav_msgs.msg import OccupancyGrid
-    from std_msgs.msg import Header
+    nav_msgs_msg = importlib.import_module("nav_msgs.msg")
+    std_msgs_msg = importlib.import_module("std_msgs.msg")
+    OccupancyGrid = getattr(nav_msgs_msg, "OccupancyGrid")
+    Header = getattr(std_msgs_msg, "Header")
 
     if occ2d.ndim != 2:
         raise ValueError("Occupancy grid expects 2D array.")
@@ -83,8 +88,11 @@ def _to_pointcloud2_msg_from_columns(
     cell_size: float,
     z_step: float,
 ):
-    from sensor_msgs.msg import PointCloud2, PointField
-    from std_msgs.msg import Header
+    sensor_msgs_msg = importlib.import_module("sensor_msgs.msg")
+    std_msgs_msg = importlib.import_module("std_msgs.msg")
+    PointCloud2 = getattr(sensor_msgs_msg, "PointCloud2")
+    PointField = getattr(sensor_msgs_msg, "PointField")
+    Header = getattr(std_msgs_msg, "Header")
 
     points: list[tuple[float, float, float]] = []
     safe_z_step = max(float(z_step), 0.05)
@@ -618,9 +626,11 @@ def publish_occ2d_ros2(
     rate_hz: float,
 ) -> None:
     try:
-        import rclpy
-        from rclpy.node import Node
-        from sensor_msgs.msg import Image
+        rclpy = importlib.import_module("rclpy")
+        rclpy_node = importlib.import_module("rclpy.node")
+        sensor_msgs_msg = importlib.import_module("sensor_msgs.msg")
+        Node = getattr(rclpy_node, "Node")
+        Image = getattr(sensor_msgs_msg, "Image")
     except Exception as exc:
         raise RuntimeError("ROS2 dependencies not available. Please install/source ROS2 Python environment.") from exc
 
@@ -660,10 +670,13 @@ def publish_map_2p5d_ros2(
     z_step: float,
 ) -> None:
     try:
-        import rclpy
-        from rclpy.node import Node
-        from nav_msgs.msg import OccupancyGrid
-        from sensor_msgs.msg import PointCloud2
+        rclpy = importlib.import_module("rclpy")
+        rclpy_node = importlib.import_module("rclpy.node")
+        nav_msgs_msg = importlib.import_module("nav_msgs.msg")
+        sensor_msgs_msg = importlib.import_module("sensor_msgs.msg")
+        Node = getattr(rclpy_node, "Node")
+        OccupancyGrid = getattr(nav_msgs_msg, "OccupancyGrid")
+        PointCloud2 = getattr(sensor_msgs_msg, "PointCloud2")
     except Exception as exc:
         raise RuntimeError("ROS2 dependencies not available. Please install/source ROS2 Python environment.") from exc
 
