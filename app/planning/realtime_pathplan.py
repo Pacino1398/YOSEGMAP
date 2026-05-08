@@ -77,6 +77,8 @@ class RealtimeRos2MapPublisher:
         cell_size: float,
         z_step: float,
         z_max_cap: float,
+        xy_spread: float,
+        xy_samples: int,
     ) -> None:
         self.enabled = False
         self._last_publish_ts = 0.0
@@ -84,6 +86,8 @@ class RealtimeRos2MapPublisher:
         self._cell_size = max(float(cell_size), 1e-6)
         self._z_step = max(float(z_step), 0.05)
         self._z_max_cap = max(float(z_max_cap), 0.0)
+        self._xy_spread = max(float(xy_spread), 0.0)
+        self._xy_samples = max(1, int(xy_samples))
         self._frame_id = frame_id
         self._occ_topic = occ_topic
         self._cloud_topic = cloud_topic
@@ -149,17 +153,44 @@ class RealtimeRos2MapPublisher:
         return msg
 
     def _build_cloud_msg(self, grid_handler, stamp):
-        points: list[tuple[float, float, float]] = []
+        points: list[tuple[float, float, float, float]] = []
         heights = getattr(grid_handler, "obstacle_heights", {})
         cells = getattr(grid_handler, "blocked_obstacles", set())
+        safe_cap = max(self._z_max_cap, 1e-6)
+
+        def _pack_rgb(r: int, g: int, b: int) -> float:
+            rgb_u32 = ((r & 255) << 16) | ((g & 255) << 8) | (b & 255)
+            return struct.unpack("<f", struct.pack("<I", rgb_u32))[0]
+
+        def _height_rgb(z_val: float) -> float:
+            ratio = max(0.0, min(1.0, z_val / safe_cap))
+            r = int(255.0 * ratio)
+            g = int(255.0 * (1.0 - abs(2.0 * ratio - 1.0)))
+            b = int(255.0 * (1.0 - ratio))
+            return _pack_rgb(r, g, b)
+
+        if self._xy_samples <= 1 or self._xy_spread <= 1e-6:
+            xy_offsets = [(0.0, 0.0)]
+        else:
+            side = self._xy_samples
+            step = (2.0 * self._xy_spread) / max(side - 1, 1)
+            xy_offsets = []
+            for ix in range(side):
+                for iy in range(side):
+                    ox = -self._xy_spread + ix * step
+                    oy = -self._xy_spread + iy * step
+                    xy_offsets.append((ox, oy))
+
         for x, y in cells:
             z_hi = min(float(heights.get((x, y), 1.0)), self._z_max_cap)
             z_lo = 0.0
-            wx = (float(x) + 0.5) * self._cell_size
-            wy = (float(y) + 0.5) * self._cell_size
+            cx = (float(x) + 0.5) * self._cell_size
+            cy = (float(y) + 0.5) * self._cell_size
             z = z_lo
             while z <= z_hi + 1e-6:
-                points.append((wx, wy, z))
+                rgb = _height_rgb(z)
+                for ox, oy in xy_offsets:
+                    points.append((cx + ox, cy + oy, z, rgb))
                 z += self._z_step
 
         msg = self._PointCloud2()
@@ -172,12 +203,13 @@ class RealtimeRos2MapPublisher:
             self._PointField(name="x", offset=0, datatype=self._PointField.FLOAT32, count=1),
             self._PointField(name="y", offset=4, datatype=self._PointField.FLOAT32, count=1),
             self._PointField(name="z", offset=8, datatype=self._PointField.FLOAT32, count=1),
+            self._PointField(name="rgb", offset=12, datatype=self._PointField.FLOAT32, count=1),
         ]
         msg.is_bigendian = False
-        msg.point_step = 12
+        msg.point_step = 16
         msg.row_step = msg.point_step * msg.width
         msg.is_dense = True
-        msg.data = b"".join(struct.pack("<fff", px, py, pz) for px, py, pz in points)
+        msg.data = b"".join(struct.pack("<ffff", px, py, pz, prgb) for px, py, pz, prgb in points)
         return msg
 
     def publish(self, grid_handler) -> None:
@@ -583,6 +615,8 @@ def run_realtime_pathplan(
     cell_size: float = 1.0,
     z_step: float = 0.5,
     z_max_cap: float = 12.0,
+    xy_spread: float = 0.0,
+    xy_samples: int = 1,
 ) -> Path | None:
     source_value = resolve_source(source)
     current_grid_scale = grid_scale if grid_scale is not None else DEFAULT_CONFIG.default_grid_scale
@@ -622,6 +656,8 @@ def run_realtime_pathplan(
             cell_size=cell_size,
             z_step=z_step,
             z_max_cap=z_max_cap,
+            xy_spread=xy_spread,
+            xy_samples=xy_samples,
         )
         if ros_publish_2p5d
         else None
@@ -746,6 +782,8 @@ def parse_args():
     parser.add_argument("--cell-size", type=float, default=1.0, help="栅格尺寸（米）")
     parser.add_argument("--z-step", type=float, default=0.5, help="点云高度采样步长（米）")
     parser.add_argument("--z-max-cap", type=float, default=12.0, help="点云灌注最大高度上限（米）")
+    parser.add_argument("--xy-spread", type=float, default=0.0, help="点云加粗半径（米，0表示不加粗）")
+    parser.add_argument("--xy-samples", type=int, default=1, help="点云加粗采样边长（>=1，3表示3x3扩点）")
     parser.add_argument("--nosave", action="store_true", help="只显示不保存输出（默认已不保存）")
     parser.add_argument("--dnn", action="store_true", help="使用 OpenCV DNN 加载 ONNX")
     parser.add_argument("--half", action="store_true", help="启用 FP16")
@@ -787,6 +825,8 @@ def main():
         cell_size=args.cell_size,
         z_step=args.z_step,
         z_max_cap=args.z_max_cap,
+        xy_spread=args.xy_spread,
+        xy_samples=args.xy_samples,
     )
 
 

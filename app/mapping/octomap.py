@@ -88,6 +88,8 @@ def _to_pointcloud2_msg_from_columns(
     cell_size: float,
     z_step: float,
     z_max_cap: float,
+    xy_spread: float,
+    xy_samples: int,
 ):
     sensor_msgs_msg = importlib.import_module("sensor_msgs.msg")
     std_msgs_msg = importlib.import_module("std_msgs.msg")
@@ -95,21 +97,46 @@ def _to_pointcloud2_msg_from_columns(
     PointField = getattr(sensor_msgs_msg, "PointField")
     Header = getattr(std_msgs_msg, "Header")
 
-    points: list[tuple[float, float, float]] = []
+    points: list[tuple[float, float, float, float]] = []
     safe_z_step = max(float(z_step), 0.05)
     safe_z_cap = max(float(z_max_cap), 0.0)
     safe_cell = max(float(cell_size), 1e-6)
+    safe_xy_spread = max(float(xy_spread), 0.0)
+    safe_xy_samples = max(1, int(xy_samples))
+
+    def _pack_rgb(r: int, g: int, b: int) -> float:
+        rgb_u32 = ((r & 255) << 16) | ((g & 255) << 8) | (b & 255)
+        return struct.unpack("<f", struct.pack("<I", rgb_u32))[0]
+
+    def _height_rgb(z_val: float) -> float:
+        cap = max(safe_z_cap, 1e-6)
+        ratio = max(0.0, min(1.0, z_val / cap))
+        r = int(255.0 * ratio)
+        g = int(255.0 * (1.0 - abs(2.0 * ratio - 1.0)))
+        b = int(255.0 * (1.0 - ratio))
+        return _pack_rgb(r, g, b)
+
+    if safe_xy_samples <= 1 or safe_xy_spread <= 1e-6:
+        xy_offsets = [(0.0, 0.0)]
+    else:
+        step = (2.0 * safe_xy_spread) / max(safe_xy_samples - 1, 1)
+        xy_offsets = []
+        for ix in range(safe_xy_samples):
+            for iy in range(safe_xy_samples):
+                xy_offsets.append((-safe_xy_spread + ix * step, -safe_xy_spread + iy * step))
 
     for (x, y), column in columns.items():
         z_lo = float(column.collision_base_z)
         z_hi = min(float(column.top_z), safe_z_cap)
         if z_hi <= z_lo:
             z_hi = z_lo + 0.05
-        wx = (float(x) + 0.5) * safe_cell
-        wy = (float(y) + 0.5) * safe_cell
+        cx = (float(x) + 0.5) * safe_cell
+        cy = (float(y) + 0.5) * safe_cell
         z = z_lo
         while z <= z_hi + 1e-6:
-            points.append((wx, wy, z))
+            rgb = _height_rgb(z)
+            for ox, oy in xy_offsets:
+                points.append((cx + ox, cy + oy, z, rgb))
             z += safe_z_step
 
     msg = PointCloud2()
@@ -121,12 +148,13 @@ def _to_pointcloud2_msg_from_columns(
         PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
         PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
         PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name="rgb", offset=12, datatype=PointField.FLOAT32, count=1),
     ]
     msg.is_bigendian = False
-    msg.point_step = 12
+    msg.point_step = 16
     msg.row_step = msg.point_step * msg.width
     msg.is_dense = True
-    msg.data = b"".join(struct.pack("<fff", px, py, pz) for px, py, pz in points)
+    msg.data = b"".join(struct.pack("<ffff", px, py, pz, prgb) for px, py, pz, prgb in points)
     return msg
 
 
@@ -618,6 +646,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cell-size", type=float, default=1.0, help="Grid cell size in meters for ROS map/point projection.")
     parser.add_argument("--z-step", type=float, default=0.5, help="Vertical sampling step (m) for 2.5D point cloud.")
     parser.add_argument("--z-max-cap", type=float, default=12.0, help="Maximum Z height cap (m) for voxel fill point cloud.")
+    parser.add_argument("--xy-spread", type=float, default=0.0, help="XY thickening radius in meters (0 disables thickening).")
+    parser.add_argument("--xy-samples", type=int, default=1, help="XY thickening sample side (>=1, e.g. 3 gives 3x3).")
     return parser.parse_args()
 
 
@@ -672,6 +702,8 @@ def publish_map_2p5d_ros2(
     cell_size: float,
     z_step: float,
     z_max_cap: float,
+    xy_spread: float,
+    xy_samples: int,
 ) -> None:
     try:
         rclpy = importlib.import_module("rclpy")
@@ -696,6 +728,8 @@ def publish_map_2p5d_ros2(
                 cell_size=cell_size,
                 z_step=z_step,
                 z_max_cap=z_max_cap,
+                xy_spread=xy_spread,
+                xy_samples=xy_samples,
             )
             period = 1.0 / max(float(rate_hz), 0.1)
             self.timer = self.create_timer(period, self._on_timer)
@@ -755,6 +789,8 @@ def main() -> None:
             cell_size=args.cell_size,
             z_step=args.z_step,
             z_max_cap=args.z_max_cap,
+            xy_spread=args.xy_spread,
+            xy_samples=args.xy_samples,
         )
         return
 
