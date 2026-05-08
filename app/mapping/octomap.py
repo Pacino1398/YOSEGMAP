@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import struct
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,98 @@ TREE_CANOPY_DOWNWARD_EXPANSION = 1.0
 CANOPY_CLASSES = {4, 6}
 GROUNDED_CLASSES = {1, 3, 5, 9}
 HOUSE_CLASS = 9
+
+
+def _to_ros_image_msg(image: np.ndarray, frame_id: str):
+    from sensor_msgs.msg import Image
+    from std_msgs.msg import Header
+
+    if image.ndim != 2:
+        raise ValueError("Only 2D grayscale images are supported for ROS2 image publishing.")
+    if image.dtype != np.uint8:
+        image = image.astype(np.uint8, copy=False)
+
+    height, width = image.shape
+    msg = Image()
+    msg.header = Header()
+    msg.header.frame_id = frame_id
+    msg.height = int(height)
+    msg.width = int(width)
+    msg.encoding = "mono8"
+    msg.is_bigendian = 0
+    msg.step = int(width)
+    msg.data = image.tobytes()
+    return msg
+
+
+def _to_occupancy_grid_msg(occ2d: np.ndarray, *, frame_id: str, cell_size: float):
+    from nav_msgs.msg import OccupancyGrid
+    from std_msgs.msg import Header
+
+    if occ2d.ndim != 2:
+        raise ValueError("Occupancy grid expects 2D array.")
+    grid = occ2d.astype(np.uint8, copy=False)
+    height, width = grid.shape
+
+    msg = OccupancyGrid()
+    msg.header = Header()
+    msg.header.frame_id = frame_id
+    msg.info.resolution = float(max(cell_size, 1e-6))
+    msg.info.width = int(width)
+    msg.info.height = int(height)
+    msg.info.origin.position.x = 0.0
+    msg.info.origin.position.y = 0.0
+    msg.info.origin.position.z = 0.0
+    msg.info.origin.orientation.w = 1.0
+
+    # ROS OccupancyGrid expects int8 values in [-1, 100]. Here use 0 (free) / 100 (occupied).
+    data = np.where(grid > 0, 100, 0).astype(np.int8, copy=False)
+    msg.data = data.reshape(-1).tolist()
+    return msg
+
+
+def _to_pointcloud2_msg_from_columns(
+    columns: Mapping[Cell2D, "ColumnState"],
+    *,
+    frame_id: str,
+    cell_size: float,
+    z_step: float,
+):
+    from sensor_msgs.msg import PointCloud2, PointField
+    from std_msgs.msg import Header
+
+    points: list[tuple[float, float, float]] = []
+    safe_z_step = max(float(z_step), 0.05)
+    safe_cell = max(float(cell_size), 1e-6)
+
+    for (x, y), column in columns.items():
+        z_lo = float(column.collision_base_z)
+        z_hi = float(column.top_z)
+        if z_hi <= z_lo:
+            z_hi = z_lo + 0.05
+        wx = (float(x) + 0.5) * safe_cell
+        wy = (float(y) + 0.5) * safe_cell
+        z = z_lo
+        while z <= z_hi + 1e-6:
+            points.append((wx, wy, z))
+            z += safe_z_step
+
+    msg = PointCloud2()
+    msg.header = Header()
+    msg.header.frame_id = frame_id
+    msg.height = 1
+    msg.width = len(points)
+    msg.fields = [
+        PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+    ]
+    msg.is_bigendian = False
+    msg.point_step = 12
+    msg.row_step = msg.point_step * msg.width
+    msg.is_dense = True
+    msg.data = b"".join(struct.pack("<fff", px, py, pz) for px, py, pz in points)
+    return msg
 
 
 @dataclass(slots=True)
@@ -503,7 +596,112 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--uav-altitude", type=float, default=DEFAULT_UAV_ALTITUDE, help="Default UAV altitude in the local 2.5D view.")
     parser.add_argument("--elev", type=float, default=28.0, help="3D camera elevation angle.")
     parser.add_argument("--azim", type=float, default=-58.0, help="3D camera azimuth angle.")
+    parser.add_argument("--ros2-publish", action="store_true", help="Publish octomap occupancy image via ROS2 topic.")
+    parser.add_argument("--ros-topic", type=str, default="/octomap/image", help="ROS2 image topic name.")
+    parser.add_argument("--ros-frame-id", type=str, default="map", help="ROS2 image frame_id.")
+    parser.add_argument("--ros-rate", type=float, default=2.0, help="ROS2 publish rate (Hz).")
+    parser.add_argument("--occupied-value", type=int, default=255, help="Occupancy pixel value (0~255).")
+    parser.add_argument("--use-columns", action="store_true", help="Use all columns for occupancy map instead of blocked obstacles only.")
+    parser.add_argument("--ros-publish-2p5d", action="store_true", help="Publish 2.5D map topics (OccupancyGrid + PointCloud2).")
+    parser.add_argument("--ros-occ-topic", type=str, default="/octomap/occupancy", help="ROS2 OccupancyGrid topic.")
+    parser.add_argument("--ros-cloud-topic", type=str, default="/octomap/points", help="ROS2 PointCloud2 topic.")
+    parser.add_argument("--cell-size", type=float, default=1.0, help="Grid cell size in meters for ROS map/point projection.")
+    parser.add_argument("--z-step", type=float, default=0.5, help="Vertical sampling step (m) for 2.5D point cloud.")
     return parser.parse_args()
+
+
+def publish_occ2d_ros2(
+    occ2d: np.ndarray,
+    *,
+    topic: str,
+    frame_id: str,
+    rate_hz: float,
+) -> None:
+    try:
+        import rclpy
+        from rclpy.node import Node
+        from sensor_msgs.msg import Image
+    except Exception as exc:
+        raise RuntimeError("ROS2 dependencies not available. Please install/source ROS2 Python environment.") from exc
+
+    class OctoMapImagePublisher(Node):
+        def __init__(self):
+            super().__init__("octomap_image_publisher")
+            self.publisher = self.create_publisher(Image, topic, 10)
+            self.msg = _to_ros_image_msg(occ2d, frame_id)
+            period = 1.0 / max(float(rate_hz), 0.1)
+            self.timer = self.create_timer(period, self._on_timer)
+
+        def _on_timer(self):
+            self.msg.header.stamp = self.get_clock().now().to_msg()
+            self.publisher.publish(self.msg)
+
+    rclpy.init()
+    node = OctoMapImagePublisher()
+    node.get_logger().info(f"Publishing occupancy image on topic: {topic}")
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def publish_map_2p5d_ros2(
+    occ2d: np.ndarray,
+    columns: Mapping[Cell2D, ColumnState],
+    *,
+    frame_id: str,
+    occ_topic: str,
+    cloud_topic: str,
+    rate_hz: float,
+    cell_size: float,
+    z_step: float,
+) -> None:
+    try:
+        import rclpy
+        from rclpy.node import Node
+        from nav_msgs.msg import OccupancyGrid
+        from sensor_msgs.msg import PointCloud2
+    except Exception as exc:
+        raise RuntimeError("ROS2 dependencies not available. Please install/source ROS2 Python environment.") from exc
+
+    class OctoMap2p5DPublisher(Node):
+        def __init__(self):
+            super().__init__("octomap_2p5d_publisher")
+            self.occ_pub = self.create_publisher(OccupancyGrid, occ_topic, 10)
+            self.cloud_pub = self.create_publisher(PointCloud2, cloud_topic, 10)
+            self.occ_msg = _to_occupancy_grid_msg(occ2d, frame_id=frame_id, cell_size=cell_size)
+            self.cloud_msg = _to_pointcloud2_msg_from_columns(
+                columns,
+                frame_id=frame_id,
+                cell_size=cell_size,
+                z_step=z_step,
+            )
+            period = 1.0 / max(float(rate_hz), 0.1)
+            self.timer = self.create_timer(period, self._on_timer)
+
+        def _on_timer(self):
+            stamp = self.get_clock().now().to_msg()
+            self.occ_msg.header.stamp = stamp
+            self.occ_msg.info.map_load_time = stamp
+            self.cloud_msg.header.stamp = stamp
+            self.occ_pub.publish(self.occ_msg)
+            self.cloud_pub.publish(self.cloud_msg)
+
+    rclpy.init()
+    node = OctoMap2p5DPublisher()
+    node.get_logger().info(
+        f"Publishing 2.5D map: occ={occ_topic}, cloud={cloud_topic}, frame={frame_id}"
+    )
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 def main() -> None:
@@ -525,6 +723,30 @@ def main() -> None:
     )
     octomap._sync_from_grid_handler()
     octomap.build_octomap(octomap.grid_handler.blocked_obstacles)
+
+    occ2d = octomap.build_occ2d(occupied_value=args.occupied_value, use_columns=args.use_columns)
+
+    if args.ros_publish_2p5d:
+        publish_map_2p5d_ros2(
+            occ2d,
+            octomap.columns,
+            frame_id=args.ros_frame_id,
+            occ_topic=args.ros_occ_topic,
+            cloud_topic=args.ros_cloud_topic,
+            rate_hz=args.ros_rate,
+            cell_size=args.cell_size,
+            z_step=args.z_step,
+        )
+        return
+
+    if args.ros2_publish:
+        publish_occ2d_ros2(
+            occ2d,
+            topic=args.ros_topic,
+            frame_id=args.ros_frame_id,
+            rate_hz=args.ros_rate,
+        )
+        return
 
     octomap.show_local_map_3d(elev=args.elev, azim=args.azim, uav_altitude=args.uav_altitude)
 
