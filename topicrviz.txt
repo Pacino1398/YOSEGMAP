@@ -1,4 +1,4 @@
-方案A（推荐）：绕开 masks/runs，直接实时分割并发布 ROS2 2.5D 话题，再用 RViz2 查看
+实时分割并发布 ROS2 2.5D 话题，再用 RViz2 
 
 一、目标
 - 不使用 app/mapping/octomap.py 的 --mask-dir 流程
@@ -17,11 +17,15 @@ python app/planning/realtime_pathplan.py \
   --ros-frame-id map \
   --ros-rate 2 \
   --ros-occ-topic /octomap/occupancy \
-  --ros-cloud-topic /octomap/points
+  --ros-cloud-topic /octomap/points \
+  --z-step 0.5 \
+  --z-max-cap 12.0
 
 说明：
 - 有桌面显示可加 --view
 - 无桌面环境不要加 --view
+- `--z-step` 为点云沿 Z 轴采样步长
+- `--z-max-cap` 为体素灌注的 Z 轴上限（超出会截断）
 
 三、终端2：检查话题是否正常发布
 ros2 topic list

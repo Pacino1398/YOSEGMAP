@@ -6,7 +6,7 @@ RK3588 / 香橙派板端运行说明
 python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view
 
 2) 摄像头实时规划 + ROS2 2.5D发布
-python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view --ros-publish-2p5d --ros-frame-id map --ros-rate 2 --ros-occ-topic /octomap/occupancy --ros-cloud-topic /octomap/points
+python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view --ros-publish-2p5d --ros-frame-id map --ros-rate 2 --ros-occ-topic /octomap/occupancy --ros-cloud-topic /octomap/points --z-step 0.5 --z-max-cap 12.0
 
 3) 订阅可视化
 python tools/ros2_map_viewer.py --occ-topic /octomap/occupancy --cloud-topic /octomap/points --scale 6
@@ -95,7 +95,9 @@ python app/planning/realtime_pathplan.py \
   --ros-frame-id map \
   --ros-rate 2 \
   --ros-occ-topic /octomap/occupancy \
-  --ros-cloud-topic /octomap/points
+  --ros-cloud-topic /octomap/points \
+  --z-step 0.5 \
+  --z-max-cap 12.0
 
 2) 验证话题
 ros2 topic list | grep octomap
@@ -116,6 +118,7 @@ python tools/ros2_map_viewer.py \
 - `--ros-cloud-topic`：发布 `PointCloud2` 的话题名（发布端参数）
 - `--cell-size`：栅格对应米数
 - `--z-step`：点云高度采样步长
+- `--z-max-cap`：点云灌注 Z 轴上限（超过该高度会截断）
 
 [E] 推荐排查路径（简版）
 1. 单图先通

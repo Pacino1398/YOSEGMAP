@@ -76,12 +76,14 @@ class RealtimeRos2MapPublisher:
         rate_hz: float,
         cell_size: float,
         z_step: float,
+        z_max_cap: float,
     ) -> None:
         self.enabled = False
         self._last_publish_ts = 0.0
         self._period = 1.0 / max(float(rate_hz), 0.1)
         self._cell_size = max(float(cell_size), 1e-6)
         self._z_step = max(float(z_step), 0.05)
+        self._z_max_cap = max(float(z_max_cap), 0.0)
         self._frame_id = frame_id
         self._occ_topic = occ_topic
         self._cloud_topic = cloud_topic
@@ -151,7 +153,7 @@ class RealtimeRos2MapPublisher:
         heights = getattr(grid_handler, "obstacle_heights", {})
         cells = getattr(grid_handler, "blocked_obstacles", set())
         for x, y in cells:
-            z_hi = float(heights.get((x, y), 1.0))
+            z_hi = min(float(heights.get((x, y), 1.0)), self._z_max_cap)
             z_lo = 0.0
             wx = (float(x) + 0.5) * self._cell_size
             wy = (float(y) + 0.5) * self._cell_size
@@ -580,6 +582,7 @@ def run_realtime_pathplan(
     ros_cloud_topic: str = "/octomap/points",
     cell_size: float = 1.0,
     z_step: float = 0.5,
+    z_max_cap: float = 12.0,
 ) -> Path | None:
     source_value = resolve_source(source)
     current_grid_scale = grid_scale if grid_scale is not None else DEFAULT_CONFIG.default_grid_scale
@@ -618,6 +621,7 @@ def run_realtime_pathplan(
             rate_hz=ros_rate,
             cell_size=cell_size,
             z_step=z_step,
+            z_max_cap=z_max_cap,
         )
         if ros_publish_2p5d
         else None
@@ -741,6 +745,7 @@ def parse_args():
     parser.add_argument("--ros-cloud-topic", default="/octomap/points", help="PointCloud2 话题名")
     parser.add_argument("--cell-size", type=float, default=1.0, help="栅格尺寸（米）")
     parser.add_argument("--z-step", type=float, default=0.5, help="点云高度采样步长（米）")
+    parser.add_argument("--z-max-cap", type=float, default=12.0, help="点云灌注最大高度上限（米）")
     parser.add_argument("--nosave", action="store_true", help="只显示不保存输出（默认已不保存）")
     parser.add_argument("--dnn", action="store_true", help="使用 OpenCV DNN 加载 ONNX")
     parser.add_argument("--half", action="store_true", help="启用 FP16")
@@ -781,6 +786,7 @@ def main():
         ros_cloud_topic=args.ros_cloud_topic,
         cell_size=args.cell_size,
         z_step=args.z_step,
+        z_max_cap=args.z_max_cap,
     )
 
 

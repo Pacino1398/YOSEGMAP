@@ -87,6 +87,7 @@ def _to_pointcloud2_msg_from_columns(
     frame_id: str,
     cell_size: float,
     z_step: float,
+    z_max_cap: float,
 ):
     sensor_msgs_msg = importlib.import_module("sensor_msgs.msg")
     std_msgs_msg = importlib.import_module("std_msgs.msg")
@@ -96,11 +97,12 @@ def _to_pointcloud2_msg_from_columns(
 
     points: list[tuple[float, float, float]] = []
     safe_z_step = max(float(z_step), 0.05)
+    safe_z_cap = max(float(z_max_cap), 0.0)
     safe_cell = max(float(cell_size), 1e-6)
 
     for (x, y), column in columns.items():
         z_lo = float(column.collision_base_z)
-        z_hi = float(column.top_z)
+        z_hi = min(float(column.top_z), safe_z_cap)
         if z_hi <= z_lo:
             z_hi = z_lo + 0.05
         wx = (float(x) + 0.5) * safe_cell
@@ -615,6 +617,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ros-cloud-topic", type=str, default="/octomap/points", help="ROS2 PointCloud2 topic.")
     parser.add_argument("--cell-size", type=float, default=1.0, help="Grid cell size in meters for ROS map/point projection.")
     parser.add_argument("--z-step", type=float, default=0.5, help="Vertical sampling step (m) for 2.5D point cloud.")
+    parser.add_argument("--z-max-cap", type=float, default=12.0, help="Maximum Z height cap (m) for voxel fill point cloud.")
     return parser.parse_args()
 
 
@@ -668,6 +671,7 @@ def publish_map_2p5d_ros2(
     rate_hz: float,
     cell_size: float,
     z_step: float,
+    z_max_cap: float,
 ) -> None:
     try:
         rclpy = importlib.import_module("rclpy")
@@ -691,6 +695,7 @@ def publish_map_2p5d_ros2(
                 frame_id=frame_id,
                 cell_size=cell_size,
                 z_step=z_step,
+                z_max_cap=z_max_cap,
             )
             period = 1.0 / max(float(rate_hz), 0.1)
             self.timer = self.create_timer(period, self._on_timer)
@@ -749,6 +754,7 @@ def main() -> None:
             rate_hz=args.ros_rate,
             cell_size=args.cell_size,
             z_step=args.z_step,
+            z_max_cap=args.z_max_cap,
         )
         return
 
