@@ -25,7 +25,7 @@ class ProjectConfig:
     default_run_name: str = "exp"
     default_device: str = "0"
     default_conf_thres: float = 0.25
-    default_grid_scale: int = 1
+    default_grid_scale: int = 10
 
     @property
     def default_mask_dir(self) -> Path:
