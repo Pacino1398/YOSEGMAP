@@ -1,6 +1,6 @@
 RK3588 / 香橙派板端运行说明
 
-================极简速查（3条命令）=================
+================ 极简速查 =================
 
 1) 摄像头实时规划（RKNN）
 python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view
@@ -11,6 +11,15 @@ python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy+
 3) 订阅可视化
 python tools/ros2_map_viewer.py --occ-topic /octomap/occupancy --cloud-topic /octomap/points --scale 6
 
+==================================================================
+
+sudo watch -n 1 "
+echo '=== RKNPU Status ===' && 
+echo -n 'Load: ' && cat /sys/kernel/debug/rknpu/load && 
+echo -n 'Freq: ' && cat /sys/kernel/debug/rknpu/freq && 
+echo -n 'FPS:  ' && cat /sys/kernel/debug/rknpu/fps 2>/dev/null || echo 'FPS: N/A (Run an app first)'
+"
+==================================================================
 
 1) 先用本地图片验证
    python app/planning/realtime_pathplan.py \
