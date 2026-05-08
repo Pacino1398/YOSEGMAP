@@ -1,0 +1,54 @@
+方案A（推荐）：绕开 masks/runs，直接实时分割并发布 ROS2 2.5D 话题，再用 RViz2 查看
+
+一、目标
+- 不使用 app/mapping/octomap.py 的 --mask-dir 流程
+- 不依赖 runs/segment/.../masks
+- 直接发布：
+  - /octomap/occupancy (nav_msgs/OccupancyGrid)
+  - /octomap/points (sensor_msgs/PointCloud2)
+
+二、终端1：启动实时分割 + 2.5D 发布（摄像头）
+python app/planning/realtime_pathplan.py \
+  --source 0 \
+  --weights ./weights/0414_qy++.rknn \
+  --backend rknn \
+  --data ./data/my.yaml \
+  --ros-publish-2p5d \
+  --ros-frame-id map \
+  --ros-rate 2 \
+  --ros-occ-topic /octomap/occupancy \
+  --ros-cloud-topic /octomap/points
+
+说明：
+- 有桌面显示可加 --view
+- 无桌面环境不要加 --view
+
+三、终端2：检查话题是否正常发布
+ros2 topic list
+ros2 topic echo /octomap/occupancy --once
+ros2 topic echo /octomap/points --once
+
+四、终端3：打开 RViz2
+rviz2
+
+RViz2 内设置：
+1) Global Options -> Fixed Frame = map
+2) Add -> Map，Topic 选 /octomap/occupancy
+3) Add -> PointCloud2，Topic 选 /octomap/points
+
+PointCloud2 推荐参数：
+- Style: Points 或 Flat Squares
+- Size (m): 0.03 ~ 0.08
+- Color Transformer: AxisColor（先看 Z）
+
+五、常见问题
+1) 看不到地图：
+- 检查 Fixed Frame 是否为 map
+- 检查 ros2 topic list 是否有 /octomap/occupancy 和 /octomap/points
+
+2) 只看到一部分：
+- 调整 RViz 视角/缩放
+- PointCloud2 的 Size 适当调大
+
+3) 无 runs 文件是否影响：
+- 本方案不依赖 runs/masks，可直接运行
