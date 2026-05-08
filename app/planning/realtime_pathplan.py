@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import struct
 import sys
 import threading
 import time
@@ -61,7 +63,139 @@ class MjpegFrameStore:
         with self.condition:
             if self.sequence == last_sequence:
                 self.condition.wait(timeout=timeout)
-            return self.sequence, self.payload
+        return self.sequence, self.payload
+
+
+class RealtimeRos2MapPublisher:
+    def __init__(
+        self,
+        *,
+        frame_id: str,
+        occ_topic: str,
+        cloud_topic: str,
+        rate_hz: float,
+        cell_size: float,
+        z_step: float,
+    ) -> None:
+        self.enabled = False
+        self._last_publish_ts = 0.0
+        self._period = 1.0 / max(float(rate_hz), 0.1)
+        self._cell_size = max(float(cell_size), 1e-6)
+        self._z_step = max(float(z_step), 0.05)
+        self._frame_id = frame_id
+        self._occ_topic = occ_topic
+        self._cloud_topic = cloud_topic
+        self._error_reported = False
+
+        try:
+            self._rclpy = importlib.import_module("rclpy")
+            rclpy_node = importlib.import_module("rclpy.node")
+            nav_msgs_msg = importlib.import_module("nav_msgs.msg")
+            sensor_msgs_msg = importlib.import_module("sensor_msgs.msg")
+            std_msgs_msg = importlib.import_module("std_msgs.msg")
+
+            self._Node = getattr(rclpy_node, "Node")
+            self._OccupancyGrid = getattr(nav_msgs_msg, "OccupancyGrid")
+            self._PointCloud2 = getattr(sensor_msgs_msg, "PointCloud2")
+            self._PointField = getattr(sensor_msgs_msg, "PointField")
+            self._Header = getattr(std_msgs_msg, "Header")
+
+            self._rclpy.init(args=None)
+            self._node = self._Node("realtime_pathplan_2p5d_publisher")
+            self._occ_pub = self._node.create_publisher(self._OccupancyGrid, self._occ_topic, 10)
+            self._cloud_pub = self._node.create_publisher(self._PointCloud2, self._cloud_topic, 10)
+            self.enabled = True
+            self._node.get_logger().info(
+                f"ROS2 2.5D publisher enabled: occ={self._occ_topic}, cloud={self._cloud_topic}, frame={self._frame_id}"
+            )
+        except Exception as exc:
+            print(f"ROS2 发布器初始化失败，已禁用发布: {exc}")
+            self.enabled = False
+
+    def close(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            self._node.destroy_node()
+            if self._rclpy.ok():
+                self._rclpy.shutdown()
+        except Exception:
+            pass
+        self.enabled = False
+
+    def _build_occ_msg(self, grid_handler, stamp):
+        h = int(grid_handler.grid_h)
+        w = int(grid_handler.grid_w)
+        occ = np.zeros((h, w), dtype=np.int8)
+        for x, y in getattr(grid_handler, "blocked_obstacles", set()):
+            if 0 <= x < w and 0 <= y < h:
+                occ[y, x] = 100
+
+        msg = self._OccupancyGrid()
+        msg.header = self._Header()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self._frame_id
+        msg.info.map_load_time = stamp
+        msg.info.resolution = self._cell_size
+        msg.info.width = w
+        msg.info.height = h
+        msg.info.origin.position.x = 0.0
+        msg.info.origin.position.y = 0.0
+        msg.info.origin.position.z = 0.0
+        msg.info.origin.orientation.w = 1.0
+        msg.data = occ.reshape(-1).tolist()
+        return msg
+
+    def _build_cloud_msg(self, grid_handler, stamp):
+        points: list[tuple[float, float, float]] = []
+        heights = getattr(grid_handler, "obstacle_heights", {})
+        cells = getattr(grid_handler, "blocked_obstacles", set())
+        for x, y in cells:
+            z_hi = float(heights.get((x, y), 1.0))
+            z_lo = 0.0
+            wx = (float(x) + 0.5) * self._cell_size
+            wy = (float(y) + 0.5) * self._cell_size
+            z = z_lo
+            while z <= z_hi + 1e-6:
+                points.append((wx, wy, z))
+                z += self._z_step
+
+        msg = self._PointCloud2()
+        msg.header = self._Header()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self._frame_id
+        msg.height = 1
+        msg.width = len(points)
+        msg.fields = [
+            self._PointField(name="x", offset=0, datatype=self._PointField.FLOAT32, count=1),
+            self._PointField(name="y", offset=4, datatype=self._PointField.FLOAT32, count=1),
+            self._PointField(name="z", offset=8, datatype=self._PointField.FLOAT32, count=1),
+        ]
+        msg.is_bigendian = False
+        msg.point_step = 12
+        msg.row_step = msg.point_step * msg.width
+        msg.is_dense = True
+        msg.data = b"".join(struct.pack("<fff", px, py, pz) for px, py, pz in points)
+        return msg
+
+    def publish(self, grid_handler) -> None:
+        if not self.enabled:
+            return
+        now = time.time()
+        if now - self._last_publish_ts < self._period:
+            return
+        self._last_publish_ts = now
+        try:
+            self._rclpy.spin_once(self._node, timeout_sec=0.0)
+            stamp = self._node.get_clock().now().to_msg()
+            occ_msg = self._build_occ_msg(grid_handler, stamp)
+            cloud_msg = self._build_cloud_msg(grid_handler, stamp)
+            self._occ_pub.publish(occ_msg)
+            self._cloud_pub.publish(cloud_msg)
+        except Exception as exc:
+            if not self._error_reported:
+                print(f"ROS2 发布失败（后续不再重复提示）: {exc}")
+                self._error_reported = True
 
 
 class ThreadingMjpegServer(server.ThreadingHTTPServer):
@@ -236,10 +370,10 @@ def render_planned_frame(
     class_names: dict[int, str],
     grid_scale: int,
     frame_stem: str,
-) -> np.ndarray:
+) -> tuple[np.ndarray, dict[str, object]]:
     mask_entries = segmenter.predict_frame(frame, frame_stem)
     plan_result = build_plan_result(frame.shape[:2], mask_entries, grid_scale)
-    return render_plan_on_frame(
+    rendered = render_plan_on_frame(
         frame,
         plan_result["grid_handler"],
         plan_result["path"],
@@ -249,6 +383,7 @@ def render_planned_frame(
         class_names=class_names,
         show_labels=True,
     )
+    return rendered, plan_result
 
 
 def maybe_show_frame(frame: np.ndarray, enabled: bool, imshow_state: dict[str, bool] | None = None) -> bool:
@@ -277,12 +412,15 @@ def process_image_source(
     show_local: bool,
     imshow_state: dict[str, bool],
     remote_server: MjpegStreamServer | None,
+    ros2_publisher: RealtimeRos2MapPublisher | None = None,
 ) -> Path | None:
     frame = cv2.imread(str(image_path))
     if frame is None:
         raise FileNotFoundError(f"无法读取图片: {image_path}")
 
-    planned = render_planned_frame(frame, segmenter, class_names, grid_scale, image_path.stem)
+    planned, plan_result = render_planned_frame(frame, segmenter, class_names, grid_scale, image_path.stem)
+    if ros2_publisher is not None:
+        ros2_publisher.publish(plan_result["grid_handler"])
     if remote_server is not None:
         remote_server.update_frame(planned)
     output_path = None
@@ -304,6 +442,7 @@ def process_video_capture(
     show_local: bool,
     imshow_state: dict[str, bool],
     remote_server: MjpegStreamServer | None,
+    ros2_publisher: RealtimeRos2MapPublisher | None = None,
     fps: float | None = None,
 ) -> Path | None:
     ok, frame = capture.read()
@@ -329,7 +468,9 @@ def process_video_capture(
     try:
         while True:
             frame_stem = get_frame_stem(Path(f"{source_name}.mp4"), frame_index)
-            planned = render_planned_frame(frame, segmenter, class_names, grid_scale, frame_stem)
+            planned, plan_result = render_planned_frame(frame, segmenter, class_names, grid_scale, frame_stem)
+            if ros2_publisher is not None:
+                ros2_publisher.publish(plan_result["grid_handler"])
             if remote_server is not None:
                 remote_server.update_frame(planned)
             if writer is not None:
@@ -357,6 +498,7 @@ def process_video_source(
     show_local: bool,
     imshow_state: dict[str, bool],
     remote_server: MjpegStreamServer | None,
+    ros2_publisher: RealtimeRos2MapPublisher | None = None,
 ) -> Path | None:
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
@@ -373,6 +515,7 @@ def process_video_source(
             show_local,
             imshow_state,
             remote_server,
+            ros2_publisher,
         )
     finally:
         capture.release()
@@ -387,6 +530,7 @@ def process_stream_source(
     show_local: bool,
     imshow_state: dict[str, bool],
     remote_server: MjpegStreamServer | None,
+    ros2_publisher: RealtimeRos2MapPublisher | None = None,
 ) -> Path | None:
     capture_target: int | str = int(stream_source) if stream_source.isdigit() else stream_source
     capture = cv2.VideoCapture(capture_target)
@@ -404,6 +548,7 @@ def process_stream_source(
             show_local,
             imshow_state,
             remote_server,
+            ros2_publisher,
         )
     finally:
         capture.release()
@@ -428,6 +573,13 @@ def run_realtime_pathplan(
     remote_host: str = "0.0.0.0",
     remote_port: int = 8080,
     remote_path: str = DEFAULT_REMOTE_PATH,
+    ros_publish_2p5d: bool = False,
+    ros_frame_id: str = "map",
+    ros_rate: float = 2.0,
+    ros_occ_topic: str = "/octomap/occupancy",
+    ros_cloud_topic: str = "/octomap/points",
+    cell_size: float = 1.0,
+    z_step: float = 0.5,
 ) -> Path | None:
     source_value = resolve_source(source)
     current_grid_scale = grid_scale if grid_scale is not None else DEFAULT_CONFIG.default_grid_scale
@@ -458,6 +610,18 @@ def run_realtime_pathplan(
     class_names = load_class_names(resolve_path(data_yaml, get_default_data_yaml()))
     imshow_state = {"enabled": show_local, "warned": False}
     remote_server = MjpegStreamServer(remote_host, remote_port, normalized_remote_path) if enable_remote else None
+    ros2_publisher = (
+        RealtimeRos2MapPublisher(
+            frame_id=ros_frame_id,
+            occ_topic=ros_occ_topic,
+            cloud_topic=ros_cloud_topic,
+            rate_hz=ros_rate,
+            cell_size=cell_size,
+            z_step=z_step,
+        )
+        if ros_publish_2p5d
+        else None
+    )
     if remote_server is not None:
         remote_server.start()
         print(f"MJPEG 预览地址: http://{remote_host if remote_host != '0.0.0.0' else '127.0.0.1'}:{remote_port}{normalized_remote_path}")
@@ -476,6 +640,7 @@ def run_realtime_pathplan(
                             show_local,
                             imshow_state,
                             remote_server,
+                            ros2_publisher,
                         )
                     elif is_video_file(media_path):
                         output_path = process_video_source(
@@ -487,6 +652,7 @@ def run_realtime_pathplan(
                             show_local,
                             imshow_state,
                             remote_server,
+                            ros2_publisher,
                         )
                     else:
                         continue
@@ -504,6 +670,7 @@ def run_realtime_pathplan(
                     show_local,
                     imshow_state,
                     remote_server,
+                    ros2_publisher,
                 )
                 if output_path is not None:
                     print(f"已保存规划结果: {output_path}")
@@ -518,6 +685,7 @@ def run_realtime_pathplan(
                 show_local,
                 imshow_state,
                 remote_server,
+                ros2_publisher,
             )
             if output_path is not None:
                 print(f"已保存规划结果: {output_path}")
@@ -532,6 +700,7 @@ def run_realtime_pathplan(
             show_local,
             imshow_state,
             remote_server,
+            ros2_publisher,
         )
         if output_path is not None:
             print(f"已保存规划结果: {output_path}")
@@ -542,6 +711,8 @@ def run_realtime_pathplan(
             close()
         if remote_server is not None:
             remote_server.close()
+        if ros2_publisher is not None:
+            ros2_publisher.close()
         if imshow_state["enabled"]:
             cv2.destroyAllWindows()
 
@@ -563,6 +734,13 @@ def parse_args():
     parser.add_argument("--remote-port", type=int, default=8080, help="MJPEG 服务端口")
     parser.add_argument("--remote-path", default=DEFAULT_REMOTE_PATH, help="MJPEG 预览路径")
     parser.add_argument("--view", action="store_true", help="兼容旧参数，等价于 --display local")
+    parser.add_argument("--ros-publish-2p5d", action="store_true", help="发布 ROS2 2.5D 地图（OccupancyGrid + PointCloud2）")
+    parser.add_argument("--ros-frame-id", default="map", help="ROS2 frame_id")
+    parser.add_argument("--ros-rate", type=float, default=2.0, help="ROS2 发布频率 Hz")
+    parser.add_argument("--ros-occ-topic", default="/octomap/occupancy", help="OccupancyGrid 话题名")
+    parser.add_argument("--ros-cloud-topic", default="/octomap/points", help="PointCloud2 话题名")
+    parser.add_argument("--cell-size", type=float, default=1.0, help="栅格尺寸（米）")
+    parser.add_argument("--z-step", type=float, default=0.5, help="点云高度采样步长（米）")
     parser.add_argument("--nosave", action="store_true", help="只显示不保存输出（默认已不保存）")
     parser.add_argument("--dnn", action="store_true", help="使用 OpenCV DNN 加载 ONNX")
     parser.add_argument("--half", action="store_true", help="启用 FP16")
@@ -596,6 +774,13 @@ def main():
         remote_host=args.remote_host,
         remote_port=args.remote_port,
         remote_path=args.remote_path,
+        ros_publish_2p5d=args.ros_publish_2p5d,
+        ros_frame_id=args.ros_frame_id,
+        ros_rate=args.ros_rate,
+        ros_occ_topic=args.ros_occ_topic,
+        ros_cloud_topic=args.ros_cloud_topic,
+        cell_size=args.cell_size,
+        z_step=args.z_step,
     )
 
 

@@ -1,80 +1,32 @@
-RK3588 / 香橙派板端运行说明（按当前仓库实际状态整理）
+RK3588 / 香橙派板端运行说明
 
-================改进方向=================
+================极简速查（3条命令）=================
 
-单核cpu吃满，npu闲置率高(75%)
-后续拆分多核cpu、多线程工作
-减小npu闲置率，多运用npu
+1) 摄像头实时规划（RKNN）
+python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view
 
-提升实时规划效率
-目前只能跑1帧/s、后续要争取15帧/s
+2) 摄像头实时规划 + ROS2 2.5D发布
+python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view --ros-publish-2p5d --ros-frame-id map --ros-rate 2 --ros-occ-topic /octomap/occupancy --ros-cloud-topic /octomap/points
 
-=======================================
-
-当前板端实时部署入口：
-  python app/planning/realtime_pathplan.py --backend rknn ...
-
-当前仓库已确认存在的关键文件：
-  - app/
-  - data/my.yaml
-  - weights/0414_qy++.rknn
-  - yolo/
+3) 订阅可视化
+python tools/ros2_map_viewer.py --occ-topic /octomap/occupancy --cloud-topic /octomap/points --scale 6
 
 
-1) 系统依赖
-   sudo apt update
-   sudo apt install -y python3.10 python3.10-venv python3-pip ffmpeg libgl1 libglib2.0-0
-
-2) 创建虚拟环境
-   python3.10 -m venv .venv
-   source .venv/bin/activate
-   python -m pip install -U pip setuptools wheel
-
-3) 安装板端 Python 依赖
-   后台运行（推荐，无桌面环境）：
-   pip install numpy PyYAML matplotlib opencv-python-headless
-
-   如果板端需要本地窗口显示（会用 --view）：
-   pip uninstall -y opencv-python-headless
-   pip install opencv-python
-
-4) 安装 RKNN 板端运行时
-   pip install rknn-toolkit-lite2
-
-5) 板端目录准备
-   至少保证以下内容在同一工程目录下：
-   - app/
-   - data/my.yaml
-   - weights/0414_qy++.rknn
-   - yolo/
-
-6) 先用本地图片验证（强烈建议先走这一条）
+1) 先用本地图片验证
    python app/planning/realtime_pathplan.py \
      --source ./your_input/test.jpg \
      --weights ./weights/0414_qy++.rknn \
      --backend rknn \
      --data ./data/my.yaml
 
-   这一步先看两件事：
-   - 是否终于能识别出障碍物
-   - 单张图耗时是否明显低于之前
-
-7) 如果单图仍然几乎空检测，先试降低阈值再看
-   python app/planning/realtime_pathplan.py \
-     --source ./your_input/test.jpg \
-     --weights ./weights/0414_qy++.rknn \
-     --backend rknn \
-     --data ./data/my.yaml \
-     --conf-thres 0.10
-
-8) 用本地视频验证
+2) 用本地视频验证
    python app/planning/realtime_pathplan.py \
      --source ./your_input/demo.mp4 \
      --weights ./weights/0414_qy++.rknn \
      --backend rknn \
      --data ./data/my.yaml
 
-9) 接 USB / MIPI 摄像头实时运行
+3) 接 USB / MIPI 摄像头实时运行
    有显示环境时：
    python app/planning/realtime_pathplan.py \
      --source 0 \
@@ -90,7 +42,7 @@ RK3588 / 香橙派板端运行说明（按当前仓库实际状态整理）
      --backend rknn \
      --data ./data/my.yaml
 
-10) 接 RTSP 流
+4) 接 RTSP 流
     有显示环境时：
     python app/planning/realtime_pathplan.py \
       --source rtsp://xxx \
@@ -101,53 +53,68 @@ RK3588 / 香橙派板端运行说明（按当前仓库实际状态整理）
 
     无桌面环境时不要加 --view
 
-11) 关于保存输出
-    当前代码里 realtime 默认不保存输出。
-    也就是说：
-    - 不加任何参数时：默认只跑实时结果，不写 runs/pathplan
-    - `--nosave` 现在只是兼容参数，和默认行为一致
 
-12) 关于显示方式
-    - `--view`：本机窗口显示
-    - 不加 `--view`：只做推理和路径规划，不弹本地窗口
-    - 如果板端没有桌面环境，不要加 `--view`
 
-13) 当前这版修复主要改了什么
-    - realtime 预处理从直接 resize 改成了 letterbox
-    - ONNX / RKNN realtime 后处理增加了按 padding / ratio 回映射 masks 和 boxes
-    - RKNN realtime 去掉了运行时 `/255`，避免与导出 `.rknn` 时的 `std=[255,255,255]` 重复归一化
-    - 小 mask 过滤阈值从 50 降到了 10，避免小目标直接被吞掉
-    - `cover` 当前会参与障碍物映射，但高度按当前代码设为 0，具体通行策略以 `app/mapping/grid_map.py` 为准
-    - realtime 默认不保存，减少 MP4 编码开销
+[B] 常用启动命令
+1) USB/MIPI 摄像头（本机显示）
+python app/planning/realtime_pathplan.py \
+  --source 0 \
+  --weights ./weights/0414_qy++.rknn \
+  --backend rknn \
+  --data ./data/my.yaml \
+  --view
 
-14) 常见问题
-    - 报错 "RKNN realtime 推理需要先安装 ..."：说明没装 rknn-toolkit-lite2
-    - 报错 "无法打开流: 0"：检查摄像头权限、设备编号或 OpenCV 是否能打开摄像头
-    - 报错 "输入不存在"：当前传入的 --source 路径不存在
-    - 无桌面环境时不要加 --view
-    - 如果单张训练图也完全识别不出，优先怀疑：
-      1. `.rknn` 权重本身和当前 `.onnx` / 数据集不一致
-      2. 板端实际运行的不是这份最新代码
-      3. `--source` 图片不是训练集同分布图片
+2) USB/MIPI 摄像头（无桌面）
+python app/planning/realtime_pathplan.py \
+  --source 0 \
+  --weights ./weights/0414_qy++.rknn \
+  --backend rknn \
+  --data ./data/my.yaml
 
-15) 推荐排查顺序
-    1. 先跑单张训练图
-    2. 再跑本地视频
-    3. 最后再接摄像头或 RTSP
-    4. 若图片有效、视频无效，再查摄像头/流本身
-    5. 若图片和视频都无效，再查权重和 RKNN 导出链路
+3) RTSP 流
+python app/planning/realtime_pathplan.py \
+  --source rtsp://xxx \
+  --weights ./weights/0414_qy++.rknn \
+  --backend rknn \
+  --data ./data/my.yaml
 
-16) 当前项目在 RK3588 板端的实际链路
-    RKNN 分割 + CPU 侧后处理 + 栅格化 + D* Lite 路径规划 + 可视化
+[C] 实时发布 ROS2 2.5D 地图（新增）
+1) 发布（在 realtime 主链路中直接发布）
+python app/planning/realtime_pathplan.py \
+  --source 0 \
+  --weights ./weights/0414_qy++.rknn \
+  --backend rknn \
+  --data ./data/my.yaml \
+  --view \
+  --ros-publish-2p5d \
+  --ros-frame-id map \
+  --ros-rate 2 \
+  --ros-occ-topic /octomap/occupancy \
+  --ros-cloud-topic /octomap/points
 
-17) 若需要重新导出 .rknn（不要在板端导出）
-    请在 x86 Linux + rknn-toolkit2 环境执行：
-    python tools/export_rknn.py --onnx ./weights/0414_qy++.onnx --output ./weights/0414_qy++.rknn --target rk3588 --opset-check
+2) 验证话题
+ros2 topic list | grep octomap
+ros2 topic hz /octomap/occupancy
+ros2 topic hz /octomap/points
 
-18) 如果你要继续定位“到底慢在哪”
-    下一步建议在 `app/planning/realtime_pathplan.py` 里加分段耗时打印，拆成：
-    - 推理
-    - 分割后处理
-    - 栅格化
-    - 路径规划
-    - 渲染
+3) 本地订阅可视化
+python tools/ros2_map_viewer.py \
+  --occ-topic /octomap/occupancy \
+  --cloud-topic /octomap/points \
+  --scale 6
+
+[D] 关键参数速查
+- `--view`：本机窗口显示（无桌面不要加）
+- `--conf-thres`：阈值，检测过少可先降到 `0.10`
+- `--ros-publish-2p5d`：开启 ROS2 地图发布
+- `--ros-occ-topic`：发布 `OccupancyGrid` 的话题名（发布端参数）
+- `--ros-cloud-topic`：发布 `PointCloud2` 的话题名（发布端参数）
+- `--cell-size`：栅格对应米数
+- `--z-step`：点云高度采样步长
+
+[E] 推荐排查路径（简版）
+1. 单图先通
+2. 本地视频再通
+3. 摄像头/RTSP 最后接入
+4. 图片有效而视频无效：查流与解码
+5. 全部无效：查权重版本与导出链路
