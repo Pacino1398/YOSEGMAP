@@ -13,7 +13,7 @@ python app/planning/realtime_pathplan.py \
   --imgsz 640 \
   --ros-publish-2p5d \
   --ros-frame-id map \
-  --ros-rate 2 \
+  --ros-rate 10 \
   --ros-occ-topic /octomap/occupancy \
   --ros-cloud-topic /octomap/points \
   --cloud-mode full \

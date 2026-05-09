@@ -831,7 +831,7 @@ def parse_args():
     parser.add_argument("--view", action="store_true", help="兼容旧参数，等价于 --display local")
     parser.add_argument("--ros-publish-2p5d", action="store_true", help="发布 ROS2 2.5D 地图（OccupancyGrid + PointCloud2）")
     parser.add_argument("--ros-frame-id", default="map", help="ROS2 frame_id")
-    parser.add_argument("--ros-rate", type=float, default=2.0, help="ROS2 发布频率 Hz")
+    parser.add_argument("--ros-rate", type=float, default=10.0, help="ROS2 发布频率 Hz")
     parser.add_argument("--ros-occ-topic", default="/octomap/occupancy", help="OccupancyGrid 话题名")
     parser.add_argument("--ros-cloud-topic", default="/octomap/points", help="PointCloud2 话题名")
     parser.add_argument("--cell-size", type=float, default=1.0, help="栅格尺寸（米）")
