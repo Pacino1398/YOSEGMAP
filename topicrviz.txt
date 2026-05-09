@@ -1,5 +1,4 @@
 实时分割并发布 ROS2 2.5D 话题，再用 RViz2 查看
-
 一、目标
 - 不使用 `app/mapping/octomap.py --mask-dir` 流程
 - 不依赖 `runs/segment/.../masks`
@@ -20,16 +19,17 @@ python app/planning/realtime_pathplan.py \
   --ros-cloud-topic /octomap/points \
   --z-step 0.3 \
   --z-max-cap 12.0 \
-  --xy-spread 0.15 \
-  --xy-samples 3
+  --xy-spread 0.2 \
+  --xy-samples 5 \
+  --view
 
 说明：
 - 有桌面显示可加 `--view`
 - 无桌面环境不要加 `--view`
 - `--z-step`：点云沿 Z 轴采样步长
-- `--z-max-cap`：体素灌注 Z 轴上限（超出截断）
-- `--xy-spread`：点云 XY 加粗半径（米）
-- `--xy-samples`：点云 XY 加粗采样边长（如 `3=3x3`）
+- `--z-max-cap`：体素灌注 Z 轴上限
+- `--xy-spread`：点云 XY 加粗半径
+- `--xy-samples`：点云 XY 加粗采样边长
 
 三、终端2：检查话题是否正常发布
 ros2 topic list
@@ -39,15 +39,15 @@ ros2 topic echo /octomap/points --once
 四、终端3：打开 RViz2
 rviz2
 
-RViz2 内设置：
-1) `Global Options -> Fixed Frame = map`
-2) `Add -> Map`，Topic 选 `/octomap/occupancy`
-3) `Add -> PointCloud2`，Topic 选 `/octomap/points`
+  RViz2 内设置：
+  1) `Global Options -> Fixed Frame = map`
+  2) `Add -> Map`，Topic 选 `/octomap/occupancy`
+  3) `Add -> PointCloud2`，Topic 选 `/octomap/points`
 
-PointCloud2 推荐参数：
-- `Style: Flat Squares`
-- `Size (m): 0.08 ~ 0.15`
-- `Color Transformer: RGB8`（按高度着色）
+  PointCloud2 推荐参数：
+  - `Style: Flat Squares`
+  - `Size (m): 0.08 ~ 0.15`
+  - `Color Transformer: RGB8`（按高度着色）
 
 五、常见问题
 1) 看不到地图：
@@ -59,5 +59,3 @@ PointCloud2 推荐参数：
 - 增大 `--xy-spread`（如 `0.20`）
 - 增大 `--xy-samples`（如 `5`）
 
-3) 无 runs 文件是否影响：
-- 本方案不依赖 `runs/masks`，可直接运行
