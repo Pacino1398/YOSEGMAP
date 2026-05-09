@@ -2,18 +2,31 @@ RK3588 / 香橙派板端运行说明
 
 ================ 极简速查 =================
 
-1) 摄像头实时规划（RKNN）
+摄像头实时规划（RKNN）
 python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view
 
-2) 摄像头实时规划 + ROS2 2.5D发布
-python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view --ros-publish-2p5d --ros-frame-id map --ros-rate 2 --ros-occ-topic /octomap/occupancy --ros-cloud-topic /octomap/points --z-step 0.3 --z-max-cap 12.0 --xy-spread 0.15 --xy-samples 3
 
-3) 订阅可视化
-python tools/ros2_map_viewer.py --occ-topic /octomap/occupancy --cloud-topic /octomap/points --scale 6
+  sudo watch -n1 '
+  echo "=== RKNPU Status ===";
+  for k in load freq fps; do
+    p=/sys/kernel/debug/rknpu/$k;
+    printf "%s: " "${k^^}";
+    [ -r "$p" ] && cat "$p" || { [ "$k" = fps ] && echo "N/A (Run an app first)" || echo "N/A"; };
+  done;
 
-==================================================================
+  echo;
+  echo "=== CPU FREQ (kHz) ===";
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -r "$p/scaling_cur_freq" ] && printf "%s: %s\n" "$(basename "$p")" "$(cat "$p/
+  scaling_cur_freq")";
+  done;
 
-sudo watch -n1 'echo "=== RKNPU Status ==="; for k in load freq fps; do p=/sys/kernel/debug/rknpu/$k; printf "%s: " "${k^^}"; [ -r "$p" ] && cat "$p" || { [ "$k" = fps ] && echo "N/A (Run an app first)" || echo "N/A"; }; done'
+  echo;
+  echo "=== THERMAL (mC) ===";
+  for t in /sys/class/thermal/thermal_zone*; do
+    [ -r "$t/temp" ] && printf "%s: %s\n" "$(basename "$t")" "$(cat "$t/temp")";
+  done
+  '
 
 ==================================================================
 
