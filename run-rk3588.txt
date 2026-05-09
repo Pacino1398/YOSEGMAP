@@ -6,7 +6,7 @@ RK3588 / 香橙派板端运行说明
 python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view
 
 
-sudo watch -n1 'echo "=== RKNPU Status ==="; for k in load freq fps; do p=/sys/kernel/debug/rknpu/$k; printf "%-5s: " "${k^^}"; [ -r "$p" ] && cat "$p" || echo "N/A"; done; echo -e "\n=== CPU FREQ (MHz) ==="; for p in /sys/devices/system/cpu/cpufreq/policy*; do [ -r "$p/scaling_cur_freq" ] && printf "%s: %d MHz\n" "$(basename "$p")" "$(( $(cat $p/scaling_cur_freq) / 1000 ))"; done; echo -e "\n=== THERMAL (°C) ==="; for t in /sys/class/thermal/thermal_zone*; do [ -r "$t/temp" ] && printf "%-15s: %.1f°C\n" "$(cat $t/type)" "$(echo "scale=1; $(cat $t/temp)/1000" | bc -l)"; done'
+sudo watch -n1 'echo "=== RKNPU Status ==="; for k in load freq fps; do p=/sys/kernel/debug/rknpu/$k; if [ -r "$p" ]; then printf "%s: " "$k"; cat "$p"; else printf "%s: N/A\n" "$k"; fi; done; echo; echo "=== CPU FREQ (MHz) ==="; for p in /sys/devices/system/cpu/cpufreq/policy*; do if [ -r "$p/scaling_cur_freq" ]; then freq=$(cat "$p/scaling_cur_freq"); echo "$(basename $p): $((freq / 1000)) MHz"; fi; done; echo; echo "=== THERMAL (C) ==="; for t in /sys/class/thermal/thermal_zone*; do if [ -r "$t/temp" ]; then temp=$(cat "$t/temp"); type=$(cat "$t/type"); echo "$type: $((temp / 1000)) C"; fi; done'
 
 ==================================================================
 
