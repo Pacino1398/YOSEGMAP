@@ -79,6 +79,9 @@ class RealtimeRos2MapPublisher:
         z_max_cap: float,
         xy_spread: float,
         xy_samples: int,
+        cloud_mode: str,
+        edge_mode: str,
+        z_style: str,
     ) -> None:
         self.enabled = False
         self._last_publish_ts = 0.0
@@ -88,6 +91,9 @@ class RealtimeRos2MapPublisher:
         self._z_max_cap = max(float(z_max_cap), 0.0)
         self._xy_spread = max(float(xy_spread), 0.0)
         self._xy_samples = max(1, int(xy_samples))
+        self._cloud_mode = cloud_mode
+        self._edge_mode = edge_mode
+        self._z_style = z_style
         self._frame_id = frame_id
         self._occ_topic = occ_topic
         self._cloud_topic = cloud_topic
@@ -155,7 +161,20 @@ class RealtimeRos2MapPublisher:
     def _build_cloud_msg(self, grid_handler, stamp):
         points: list[tuple[float, float, float, float]] = []
         heights = getattr(grid_handler, "obstacle_heights", {})
-        cells = getattr(grid_handler, "blocked_obstacles", set())
+        all_cells = set(getattr(grid_handler, "blocked_obstacles", set()))
+        cells = all_cells
+        if self._cloud_mode == "edge":
+            if self._edge_mode == "8n":
+                nbs = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
+            else:
+                nbs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+            edge_cells = set()
+            for x, y in all_cells:
+                for dx, dy in nbs:
+                    if (x + dx, y + dy) not in all_cells:
+                        edge_cells.add((x, y))
+                        break
+            cells = edge_cells
         safe_cap = max(self._z_max_cap, 1e-6)
 
         def _pack_rgb(r: int, g: int, b: int) -> float:
@@ -186,12 +205,20 @@ class RealtimeRos2MapPublisher:
             z_lo = 0.0
             cx = (float(x) + 0.5) * self._cell_size
             cy = (float(y) + 0.5) * self._cell_size
-            z = z_lo
-            while z <= z_hi + 1e-6:
-                rgb = _height_rgb(z)
+            if self._z_style == "top":
+                z_values = [z_hi]
+            else:
+                z_values = []
+                z = z_lo
+                while z <= z_hi + 1e-6:
+                    z_values.append(z)
+                    z += self._z_step
+                if not z_values:
+                    z_values = [z_hi]
+            for z_val in z_values:
+                rgb = _height_rgb(z_val)
                 for ox, oy in xy_offsets:
-                    points.append((cx + ox, cy + oy, z, rgb))
-                z += self._z_step
+                    points.append((cx + ox, cy + oy, z_val, rgb))
 
         msg = self._PointCloud2()
         msg.header = self._Header()
@@ -437,6 +464,14 @@ def maybe_show_frame(frame: np.ndarray, enabled: bool, imshow_state: dict[str, b
         return False
 
 
+def to_gray_view_frame(frame: np.ndarray, gray_view: bool) -> np.ndarray:
+    if not gray_view:
+        return frame
+    if frame.ndim == 2:
+        return frame
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+
 def process_image_source(
     image_path: Path,
     segmenter,
@@ -447,6 +482,7 @@ def process_image_source(
     imshow_state: dict[str, bool],
     remote_server: MjpegStreamServer | None,
     ros2_publisher: RealtimeRos2MapPublisher | None = None,
+    gray_view: bool = False,
 ) -> Path | None:
     frame = cv2.imread(str(image_path))
     if frame is None:
@@ -455,13 +491,14 @@ def process_image_source(
     planned, plan_result = render_planned_frame(frame, segmenter, class_names, grid_scale, image_path.stem)
     if ros2_publisher is not None:
         ros2_publisher.publish(plan_result["grid_handler"])
+    display_frame = to_gray_view_frame(planned, gray_view)
     if remote_server is not None:
-        remote_server.update_frame(planned)
+        remote_server.update_frame(display_frame)
     output_path = None
     if run_dir is not None:
         output_path = run_dir / f"{image_path.stem}_planned.png"
         cv2.imwrite(str(output_path), planned)
-    if maybe_show_frame(planned, show_local and imshow_state["enabled"], imshow_state):
+    if maybe_show_frame(display_frame, show_local and imshow_state["enabled"], imshow_state):
         return output_path
     return output_path
 
@@ -477,6 +514,7 @@ def process_video_capture(
     imshow_state: dict[str, bool],
     remote_server: MjpegStreamServer | None,
     ros2_publisher: RealtimeRos2MapPublisher | None = None,
+    gray_view: bool = False,
     fps: float | None = None,
 ) -> Path | None:
     ok, frame = capture.read()
@@ -505,11 +543,12 @@ def process_video_capture(
             planned, plan_result = render_planned_frame(frame, segmenter, class_names, grid_scale, frame_stem)
             if ros2_publisher is not None:
                 ros2_publisher.publish(plan_result["grid_handler"])
+            display_frame = to_gray_view_frame(planned, gray_view)
             if remote_server is not None:
-                remote_server.update_frame(planned)
+                remote_server.update_frame(display_frame)
             if writer is not None:
                 writer.write(planned)
-            if maybe_show_frame(planned, show_local and imshow_state["enabled"], imshow_state):
+            if maybe_show_frame(display_frame, show_local and imshow_state["enabled"], imshow_state):
                 break
 
             ok, frame = capture.read()
@@ -533,6 +572,7 @@ def process_video_source(
     imshow_state: dict[str, bool],
     remote_server: MjpegStreamServer | None,
     ros2_publisher: RealtimeRos2MapPublisher | None = None,
+    gray_view: bool = False,
 ) -> Path | None:
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
@@ -550,6 +590,7 @@ def process_video_source(
             imshow_state,
             remote_server,
             ros2_publisher,
+            gray_view,
         )
     finally:
         capture.release()
@@ -565,6 +606,7 @@ def process_stream_source(
     imshow_state: dict[str, bool],
     remote_server: MjpegStreamServer | None,
     ros2_publisher: RealtimeRos2MapPublisher | None = None,
+    gray_view: bool = False,
 ) -> Path | None:
     capture_target: int | str = int(stream_source) if stream_source.isdigit() else stream_source
     capture = cv2.VideoCapture(capture_target)
@@ -583,6 +625,7 @@ def process_stream_source(
             imshow_state,
             remote_server,
             ros2_publisher,
+            gray_view,
         )
     finally:
         capture.release()
@@ -617,6 +660,10 @@ def run_realtime_pathplan(
     z_max_cap: float = 12.0,
     xy_spread: float = 0.0,
     xy_samples: int = 1,
+    cloud_mode: str = "edge",
+    edge_mode: str = "4n",
+    z_style: str = "top",
+    gray_view: bool = False,
 ) -> Path | None:
     source_value = resolve_source(source)
     current_grid_scale = grid_scale if grid_scale is not None else DEFAULT_CONFIG.default_grid_scale
@@ -658,6 +705,9 @@ def run_realtime_pathplan(
             z_max_cap=z_max_cap,
             xy_spread=xy_spread,
             xy_samples=xy_samples,
+            cloud_mode=cloud_mode,
+            edge_mode=edge_mode,
+            z_style=z_style,
         )
         if ros_publish_2p5d
         else None
@@ -681,6 +731,7 @@ def run_realtime_pathplan(
                             imshow_state,
                             remote_server,
                             ros2_publisher,
+                            gray_view,
                         )
                     elif is_video_file(media_path):
                         output_path = process_video_source(
@@ -693,6 +744,7 @@ def run_realtime_pathplan(
                             imshow_state,
                             remote_server,
                             ros2_publisher,
+                            gray_view,
                         )
                     else:
                         continue
@@ -711,6 +763,7 @@ def run_realtime_pathplan(
                     imshow_state,
                     remote_server,
                     ros2_publisher,
+                    gray_view,
                 )
                 if output_path is not None:
                     print(f"已保存规划结果: {output_path}")
@@ -726,6 +779,7 @@ def run_realtime_pathplan(
                 imshow_state,
                 remote_server,
                 ros2_publisher,
+                gray_view,
             )
             if output_path is not None:
                 print(f"已保存规划结果: {output_path}")
@@ -741,6 +795,7 @@ def run_realtime_pathplan(
             imshow_state,
             remote_server,
             ros2_publisher,
+            gray_view,
         )
         if output_path is not None:
             print(f"已保存规划结果: {output_path}")
@@ -784,6 +839,10 @@ def parse_args():
     parser.add_argument("--z-max-cap", type=float, default=12.0, help="点云灌注最大高度上限（米）")
     parser.add_argument("--xy-spread", type=float, default=0.0, help="点云加粗半径（米，0表示不加粗）")
     parser.add_argument("--xy-samples", type=int, default=1, help="点云加粗采样边长（>=1，3表示3x3扩点）")
+    parser.add_argument("--cloud-mode", choices=("full", "edge"), default="edge", help="点云发布模式：全量或边缘")
+    parser.add_argument("--edge-mode", choices=("4n", "8n"), default="4n", help="边缘提取邻域模式")
+    parser.add_argument("--z-style", choices=("top", "band"), default="top", help="高度发布方式：仅顶面或整段")
+    parser.add_argument("--gray-view", action="store_true", help="本机显示与远端预览使用灰度图，减轻可视化负载")
     parser.add_argument("--nosave", action="store_true", help="只显示不保存输出（默认已不保存）")
     parser.add_argument("--dnn", action="store_true", help="使用 OpenCV DNN 加载 ONNX")
     parser.add_argument("--half", action="store_true", help="启用 FP16")
@@ -827,6 +886,10 @@ def main():
         z_max_cap=args.z_max_cap,
         xy_spread=args.xy_spread,
         xy_samples=args.xy_samples,
+        cloud_mode=args.cloud_mode,
+        edge_mode=args.edge_mode,
+        z_style=args.z_style,
+        gray_view=args.gray_view,
     )
 
 

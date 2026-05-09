@@ -83,7 +83,7 @@ python app/planning/realtime_pathplan.py \
   --backend rknn \
   --data ./data/my.yaml
 
-[C] 实时发布 ROS2 2.5D 地图（新增）
+[C] 实时发布 ROS2 2.5D 地图（ 见 topicrviz.txt）
 1) 发布（在 realtime 主链路中直接发布）
 python app/planning/realtime_pathplan.py \
   --source 0 \
@@ -124,28 +124,3 @@ python tools/ros2_map_viewer.py \
 - `--xy-spread`：点云 XY 加粗半径（米）
 - `--xy-samples`：点云 XY 加粗采样边长（如 3=3x3）
 
-[E] 推荐排查路径（简版）
-1. 单图先通
-2. 本地视频再通
-3. 摄像头/RTSP 最后接入
-4. 图片有效而视频无效：查流与解码
-5. 全部无效：查权重版本与导出链路
-
-[F] 保留可视化但减负（推荐）
-1) 本机可视化 + 降低输入尺寸
-python app/planning/realtime_pathplan.py \
-  --source 0 \
-  --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
-  --data ./data/my.yaml \
-  --display local \
-  --imgsz 512
-
-2) 若仍卡顿，继续降到
-python app/planning/realtime_pathplan.py \
-  --source 0 \
-  --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
-  --data ./data/my.yaml \
-  --display local \
-  --imgsz 448
