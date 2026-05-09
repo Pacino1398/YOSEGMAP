@@ -16,13 +16,13 @@ python app/planning/realtime_pathplan.py \
   --ros-rate 2 \
   --ros-occ-topic /octomap/occupancy \
   --ros-cloud-topic /octomap/points \
-  --cloud-mode edge \
+  --cloud-mode full \
   --edge-mode 4n \
   --z-style top \
   --z-step 0.3 \
   --z-max-cap 12.0 \
   --xy-spread 0.15 \
-  --xy-samples 3
+  --xy-samples 2
 
 终端2（订阅检查）
 ros2 topic list | grep octomap
@@ -42,9 +42,11 @@ python app/planning/realtime_pathplan.py \
   --backend rknn \
   --data ./data/my.yaml \
   --display local \
+  --cloud-mode full \
   --imgsz 640 \
   --gray-view \
   --ros-publish-2p5d
+  --xy-samples 2
 
 终端2（订阅检查）
 ros2 topic list | grep octomap
