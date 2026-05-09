@@ -6,27 +6,7 @@ RK3588 / 香橙派板端运行说明
 python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view
 
 
-  sudo watch -n1 '
-  echo "=== RKNPU Status ===";
-  for k in load freq fps; do
-    p=/sys/kernel/debug/rknpu/$k;
-    printf "%s: " "${k^^}";
-    [ -r "$p" ] && cat "$p" || { [ "$k" = fps ] && echo "N/A (Run an app first)" || echo "N/A"; };
-  done;
-
-  echo;
-  echo "=== CPU FREQ (kHz) ===";
-  for p in /sys/devices/system/cpu/cpufreq/policy*; do
-    [ -r "$p/scaling_cur_freq" ] && printf "%s: %s\n" "$(basename "$p")" "$(cat "$p/
-  scaling_cur_freq")";
-  done;
-
-  echo;
-  echo "=== THERMAL (mC) ===";
-  for t in /sys/class/thermal/thermal_zone*; do
-    [ -r "$t/temp" ] && printf "%s: %s\n" "$(basename "$t")" "$(cat "$t/temp")";
-  done
-  '
+sudo watch -n1 'echo "=== RKNPU Status ==="; for k in load freq fps; do p=/sys/kernel/debug/rknpu/$k; printf "%-5s: " "${k^^}"; [ -r "$p" ] && cat "$p" || echo "N/A"; done; echo -e "\n=== CPU FREQ (MHz) ==="; for p in /sys/devices/system/cpu/cpufreq/policy*; do [ -r "$p/scaling_cur_freq" ] && printf "%s: %d MHz\n" "$(basename "$p")" "$(( $(cat $p/scaling_cur_freq) / 1000 ))"; done; echo -e "\n=== THERMAL (°C) ==="; for t in /sys/class/thermal/thermal_zone*; do [ -r "$t/temp" ] && printf "%-15s: %.1f°C\n" "$(cat $t/type)" "$(echo "scale=1; $(cat $t/temp)/1000" | bc -l)"; done'
 
 ==================================================================
 
