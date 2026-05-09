@@ -42,7 +42,7 @@ from app.planning.pathplan_batch import (
     load_class_names,
 )
 
-MANUAL_MASK_DIR: str | Path | None = r"D:\qingyu\Yosegment\runs\segment\exp2\masks"
+MANUAL_MASK_DIR: str | Path | None = r"D:\\qingyu\\YosegMap\\runs\\segment\\exp2\\masks"
 
 
 def get_default_mask_dir() -> Path:
