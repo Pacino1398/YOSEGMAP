@@ -13,7 +13,6 @@ MaskEntry = list
 TARGET_CLASS = 0
 
 # “可通行但有代价”的类别（不应出现在 batch_masks_to_obs 的返回集合 obs 中）
-# NOTE: class 1 (car) 在单元测试中被期望为“阻塞障碍”，因此不应在此集合里。
 TRAVERSABLE_CLASSES: set[int] = {
     2,
     3,

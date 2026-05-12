@@ -34,7 +34,7 @@ ros2 topic hz /octomap/points
 终端3（RViz2）
 rviz2
 
-场景B：保留可视化但减负（仍发布并可订阅）
+场景B：保留可视化（仍发布并可订阅）
 终端1（发布端）
 python app/planning/realtime_pathplan.py \
   --source 0 \

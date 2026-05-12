@@ -1,3 +1,19 @@
+'''
+    PT -> ONNX：
+    ```
+    python yolo/export.py --weights ./weights/0414_qy++.pt --include onnx --imgsz 640 640 --simplify --opset 12 --output ./weights/0414_qy++.onnx
+    ```
+
+    ONNX -> RKNN：
+    若需要重新导出 .rknn（不要在板端导出）
+    请在 x86_64 Linux + rknn-toolkit2 环境执行：
+    ```
+    python tools/export_rknn.py --onnx ./weights/0414_qy++.onnx --output ./weights/0414_qy++.rknn --target rk3588
+    ```
+    其中 --opset-check 可选，启用后会先打印 ONNX 模型的 IR 版本、opset 版本和输出节点信息，确认无误后继续导出 .rknn。
+
+'''
+
 from __future__ import annotations
 
 import argparse
