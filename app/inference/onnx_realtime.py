@@ -201,6 +201,31 @@ def _crop_mask(mask: np.ndarray, box: np.ndarray) -> np.ndarray:
     return cropped
 
 
+def _crop_masks_vectorized(masks: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+    if masks.ndim != 3:
+        raise ValueError(f"masks 必须是 NxHxW，当前 shape={masks.shape}")
+    if boxes.ndim != 2 or boxes.shape[1] != 4:
+        raise ValueError(f"boxes 必须是 Nx4，当前 shape={boxes.shape}")
+    if masks.shape[0] != boxes.shape[0]:
+        raise ValueError(f"masks 与 boxes 数量不一致: {masks.shape[0]} vs {boxes.shape[0]}")
+
+    n, h, w = masks.shape
+    if n == 0:
+        return masks
+
+    x1 = np.clip(np.floor(boxes[:, 0]).astype(np.int32), 0, max(w - 1, 0))
+    y1 = np.clip(np.floor(boxes[:, 1]).astype(np.int32), 0, max(h - 1, 0))
+    x2 = np.clip(np.ceil(boxes[:, 2]).astype(np.int32), 0, w)
+    y2 = np.clip(np.ceil(boxes[:, 3]).astype(np.int32), 0, h)
+
+    xs = np.arange(w, dtype=np.int32)[None, None, :]
+    ys = np.arange(h, dtype=np.int32)[None, :, None]
+    valid_x = (xs >= x1[:, None, None]) & (xs < x2[:, None, None])
+    valid_y = (ys >= y1[:, None, None]) & (ys < y2[:, None, None])
+    keep = valid_x & valid_y
+    return masks * keep.astype(masks.dtype, copy=False)
+
+
 def _normalize_prediction(prediction: np.ndarray, mask_dim: int) -> np.ndarray:
     if prediction.ndim != 3:
         raise ValueError(f"预测输出必须是 3 维，当前 shape={prediction.shape}")
@@ -407,17 +432,13 @@ def postprocess_segmentation_outputs(
     scaled_boxes_for_proto[:, [0, 2]] *= proto_w / float(imgsz[1])
     scaled_boxes_for_proto[:, [1, 3]] *= proto_h / float(imgsz[0])
 
-    cropped_masks = []
-    for mask, box in zip(masks, scaled_boxes_for_proto):
-        cropped_masks.append(_crop_mask(mask, box))
-
-    if not cropped_masks:
+    cropped_masks_array = _crop_masks_vectorized(masks, scaled_boxes_for_proto)
+    if cropped_masks_array.size == 0:
         return np.empty((0, 6), dtype=np.float32), np.zeros((frame_shape[0], frame_shape[1], 0), dtype=np.uint8)
 
-    cropped_masks_array = np.stack(cropped_masks, axis=0)
     resized_masks = _resize_masks(np.moveaxis(cropped_masks_array, 0, -1), imgsz)
     scaled_masks = _scale_masks_from_letterbox(resized_masks, imgsz, frame_shape, ratio_pad)
-    binary_masks = (scaled_masks > 0.5).astype(np.uint8)
+    binary_masks = np.ascontiguousarray((scaled_masks > 0.5).astype(np.uint8, copy=False))
 
     scaled_boxes = _scale_boxes_from_letterbox(boxes, frame_shape, ratio_pad)
     detections = np.column_stack((scaled_boxes, scores, class_ids)).astype(np.float32, copy=False)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import queue
 import struct
 import sys
 import threading
@@ -20,8 +21,11 @@ if str(ROOT) not in sys.path:
 from app.config import DEFAULT_CONFIG
 from app.inference.onnx_realtime import (
     OnnxRealtimeSegmenter,
+    detections_to_mask_entries,
+    extract_prediction_and_proto,
     get_default_data_yaml,
     get_default_realtime_weights,
+    postprocess_segmentation_outputs,
 )
 from app.inference.rknn_realtime import RknnRealtimeSegmenter
 from app.inference.segmentation import get_default_source_dir
@@ -447,6 +451,44 @@ def render_planned_frame(
     return rendered, plan_result
 
 
+def _render_planned_frame_from_outputs(
+    frame: np.ndarray,
+    frame_stem: str,
+    outputs: list[np.ndarray],
+    ratio_pad: tuple[tuple[float, float], tuple[float, float]],
+    segmenter,
+    class_names: dict[int, str],
+    grid_scale: int,
+) -> tuple[np.ndarray, dict[str, object]]:
+    backend_name = "RKNN" if isinstance(segmenter, RknnRealtimeSegmenter) else "ONNX"
+    prediction, proto = extract_prediction_and_proto(outputs, backend_name)
+    detections, masks = postprocess_segmentation_outputs(
+        prediction,
+        proto,
+        frame.shape[:2],
+        segmenter.imgsz,
+        ratio_pad,
+        segmenter.conf_thres,
+        segmenter.iou_thres,
+        segmenter.max_det,
+        segmenter.classes,
+        segmenter.agnostic_nms,
+    )
+    mask_entries = detections_to_mask_entries(detections, masks, frame_stem)
+    plan_result = build_plan_result(frame.shape[:2], mask_entries, grid_scale)
+    rendered = render_plan_on_frame(
+        frame,
+        plan_result["grid_handler"],
+        plan_result["path"],
+        plan_result["start"],
+        plan_result["goal"],
+        grid_scale,
+        class_names=class_names,
+        show_labels=True,
+    )
+    return np.ascontiguousarray(rendered), plan_result
+
+
 def maybe_show_frame(frame: np.ndarray, enabled: bool, imshow_state: dict[str, bool] | None = None) -> bool:
     if not enabled:
         return False
@@ -669,40 +711,109 @@ def process_stream_source(
     writer = None
     frame_index = 1
     grabber = _LatestFrameGrabber(capture).start()
+    stop_event = threading.Event()
+    prep_queue: "queue.Queue[tuple[np.ndarray, str, np.ndarray, tuple[tuple[float, float], tuple[float, float]]]]" = queue.Queue(maxsize=2)
+    post_queue: "queue.Queue[tuple[np.ndarray, str, list[np.ndarray], tuple[tuple[float, float], tuple[float, float]]]]" = queue.Queue(maxsize=2)
+    display_queue: "queue.Queue[tuple[np.ndarray, np.ndarray, dict[str, object]]]" = queue.Queue(maxsize=1)
+
+    def _preprocess_worker() -> None:
+        local_index = 1
+        while not stop_event.is_set():
+            ok_local, frame_local = grabber.read_latest()
+            if not ok_local or frame_local is None:
+                time.sleep(0.001)
+                continue
+            frame_stem_local = get_frame_stem(Path(f"{source_name}.mp4"), local_index)
+            input_tensor_local, ratio_pad_local = segmenter.preprocess_frame(frame_local)
+            input_tensor_local = np.ascontiguousarray(input_tensor_local)
+            item = (frame_local, frame_stem_local, input_tensor_local, ratio_pad_local)
+            if prep_queue.full():
+                try:
+                    prep_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            prep_queue.put_nowait(item)
+            local_index += 1
+
+    def _postprocess_worker() -> None:
+        while not stop_event.is_set():
+            try:
+                frame_local, frame_stem_local, outputs_local, ratio_pad_local = post_queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            planned_local, plan_result_local = _render_planned_frame_from_outputs(
+                frame_local,
+                frame_stem_local,
+                outputs_local,
+                ratio_pad_local,
+                segmenter,
+                class_names,
+                grid_scale,
+            )
+            if ros2_publisher is not None:
+                ros2_publisher.publish(plan_result_local["grid_handler"])
+            display_frame_local = to_gray_view_frame(planned_local, gray_view)
+            if display_queue.full():
+                try:
+                    display_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            display_queue.put_nowait((planned_local, display_frame_local, plan_result_local))
+
+    preprocess_thread = threading.Thread(target=_preprocess_worker, daemon=True)
+    postprocess_thread = threading.Thread(target=_postprocess_worker, daemon=True)
+    preprocess_thread.start()
+    postprocess_thread.start()
 
     try:
         while True:
-            ok, frame = grabber.read_latest()
-            if not ok or frame is None:
-                time.sleep(0.002)
+            try:
+                frame, frame_stem, input_tensor, ratio_pad = prep_queue.get(timeout=0.05)
+            except queue.Empty:
                 continue
 
-            if writer is None and run_dir is not None:
-                frame_h, frame_w = frame.shape[:2]
-                current_fps = capture.get(cv2.CAP_PROP_FPS)
-                if not current_fps or current_fps <= 0:
-                    current_fps = 30.0
-                output_path = run_dir / f"{source_name}_planned.mp4"
-                writer = cv2.VideoWriter(
-                    str(output_path),
-                    cv2.VideoWriter_fourcc(*"mp4v"),
-                    current_fps,
-                    (frame_w, frame_h),
-                )
+            outputs = segmenter._run_inference(input_tensor)
 
-            frame_stem = get_frame_stem(Path(f"{source_name}.mp4"), frame_index)
-            planned, plan_result = render_planned_frame(frame, segmenter, class_names, grid_scale, frame_stem)
-            if ros2_publisher is not None:
-                ros2_publisher.publish(plan_result["grid_handler"])
-            display_frame = to_gray_view_frame(planned, gray_view)
-            if remote_server is not None:
-                remote_server.update_frame(display_frame)
-            if writer is not None:
-                writer.write(planned)
-            if maybe_show_frame(display_frame, show_local and imshow_state["enabled"], imshow_state):
+            if post_queue.full():
+                try:
+                    post_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            post_queue.put_nowait((frame, frame_stem, outputs, ratio_pad))
+
+            while True:
+                try:
+                    planned, display_frame, _ = display_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+                if writer is None and run_dir is not None:
+                    frame_h, frame_w = planned.shape[:2]
+                    current_fps = capture.get(cv2.CAP_PROP_FPS)
+                    if not current_fps or current_fps <= 0:
+                        current_fps = 30.0
+                    output_path = run_dir / f"{source_name}_planned.mp4"
+                    writer = cv2.VideoWriter(
+                        str(output_path),
+                        cv2.VideoWriter_fourcc(*"mp4v"),
+                        current_fps,
+                        (frame_w, frame_h),
+                    )
+
+                if remote_server is not None:
+                    remote_server.update_frame(display_frame)
+                if writer is not None:
+                    writer.write(planned)
+                if maybe_show_frame(display_frame, show_local and imshow_state["enabled"], imshow_state):
+                    stop_event.set()
+                    break
+                frame_index += 1
+            if stop_event.is_set():
                 break
-            frame_index += 1
     finally:
+        stop_event.set()
+        preprocess_thread.join(timeout=1.0)
+        postprocess_thread.join(timeout=1.0)
         grabber.stop()
         if writer is not None:
             writer.release()
