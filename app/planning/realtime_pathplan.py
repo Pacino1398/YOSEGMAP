@@ -95,6 +95,7 @@ class AsyncMapPublisher:
         edge_mode: str,
         z_style: str,
         ros_lite_mode: bool = False,
+        marker_div: int = 3,
     ) -> None:
         self.enabled = False
         self._period = 1.0 / max(float(rate_hz), 0.1)
@@ -107,6 +108,7 @@ class AsyncMapPublisher:
         self._edge_mode = edge_mode
         self._z_style = z_style
         self._ros_lite_mode = bool(ros_lite_mode)
+        self._marker_div = max(1, int(marker_div))
         self._frame_id = frame_id
         self._occ_topic = occ_topic
         self._cloud_topic = cloud_topic
@@ -200,8 +202,8 @@ class AsyncMapPublisher:
                     stamp = self._stamp_from_ns(stamp_ns)
                     occ_msg = self._build_occ_msg(grid_handler, stamp)
                     marker_msg = None
-                    # Build MarkerArray at ~2Hz when source frame index is divisible by 5.
-                    if (not self._ros_lite_mode) and frame_index > 0 and frame_index % 5 == 0:
+                    # Build MarkerArray at reduced rate to control CPU load.
+                    if (not self._ros_lite_mode) and frame_index > 0 and frame_index % self._marker_div == 0:
                         marker_msg = self._build_marker_msg(grid_handler, stamp)
                     with self._lock:
                         self._occ_cache = occ_msg
@@ -277,9 +279,25 @@ class AsyncMapPublisher:
             return marker_array
         heights = getattr(grid_handler, "obstacle_heights", {})
         safe_cap = max(self._z_max_cap, 1e-6)
-        points = np.asarray(list(blocked), dtype=np.int32)
+        cells = set(blocked)
+        if self._cloud_mode == "edge":
+            if self._edge_mode == "8n":
+                nbs = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
+            else:
+                nbs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+            edge_cells = set()
+            for x, y in cells:
+                for dx, dy in nbs:
+                    if (x + dx, y + dy) not in cells:
+                        edge_cells.add((x, y))
+                        break
+            cells = edge_cells
+        if not cells:
+            return marker_array
+        points = np.asarray(list(cells), dtype=np.int32)
         for i, (x_i, y_i) in enumerate(points.tolist()):
             z = float(heights.get((x_i, y_i), 0.0))
+            # Top-only style: one cube per cell, height equals obstacle top.
             z = max(0.01, min(z, self._z_max_cap))
             ratio = max(0.0, min(1.0, z / safe_cap))
             m = self._Marker()
@@ -909,6 +927,7 @@ def run_realtime_pathplan(
     cloud_mode: str = "edge",
     edge_mode: str = "4n",
     z_style: str = "top",
+    ros_marker_div: int = 3,
     gray_view: bool = False,
 ) -> Path | None:
     source_value = resolve_source(source)
@@ -956,6 +975,7 @@ def run_realtime_pathplan(
             edge_mode=edge_mode,
             z_style=z_style,
             ros_lite_mode=ros_lite_mode,
+            marker_div=ros_marker_div,
         )
         if ros_publish_2p5d
         else None
@@ -1093,6 +1113,7 @@ def parse_args():
     parser.add_argument("--cloud-mode", choices=("full", "edge"), default="full", help="点云发布模式：全量或边缘")
     parser.add_argument("--edge-mode", choices=("4n", "8n"), default="4n", help="边缘提取邻域模式")
     parser.add_argument("--z-style", choices=("top", "band"), default="top", help="高度发布方式：仅顶面或整段")
+    parser.add_argument("--ros-marker-div", type=int, default=3, help="MarkerArray 分频发布：每 N 帧发布一次（>=1）")
     parser.add_argument("--gray-view", action="store_true", help="本机显示与远端预览使用灰度图，减轻可视化负载")
     parser.add_argument("--nosave", action="store_true", help="只显示不保存输出（默认已不保存）")
     parser.add_argument("--dnn", action="store_true", help="使用 OpenCV DNN 加载 ONNX")
@@ -1142,6 +1163,7 @@ def main():
         cloud_mode=args.cloud_mode,
         edge_mode=args.edge_mode,
         z_style=args.z_style,
+        ros_marker_div=args.ros_marker_div,
         gray_view=args.gray_view,
     )
 

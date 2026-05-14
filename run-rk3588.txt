@@ -149,6 +149,12 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
 ros2 topic list | grep octomap
 ros2 topic hz /octomap/occupancy
 
+4) 测“新图真实频率”（推荐）
+python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0
+# 输出:
+# - publish_hz: 话题发布频率（含重复旧图）
+# - newmap_hz: 新图更新频率（内容发生变化）
+
 3) 本地订阅可视化
 python tools/ros2_map_viewer.py \
   --occ-topic /octomap/occupancy \
