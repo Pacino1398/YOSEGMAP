@@ -472,6 +472,49 @@ def to_gray_view_frame(frame: np.ndarray, gray_view: bool) -> np.ndarray:
     return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
 
+def _build_mpp_mjpg_gstreamer(device: str, width: int = 1280, height: int = 720, fps: int = 30) -> str:
+    return (
+        f"v4l2src device={device} io-mode=4 ! "
+        f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
+        "jpegparse ! mppjpegdec ! "
+        "videoconvert n-threads=2 ! "
+        "video/x-raw,format=BGR ! "
+        "appsink drop=true max-buffers=1 sync=false"
+    )
+
+
+class _LatestFrameGrabber:
+    def __init__(self, capture: cv2.VideoCapture) -> None:
+        self.capture = capture
+        self._lock = threading.Lock()
+        self._latest: np.ndarray | None = None
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+
+    def start(self) -> "_LatestFrameGrabber":
+        self._thread.start()
+        return self
+
+    def _worker(self) -> None:
+        while not self._stopped.is_set():
+            ok, frame = self.capture.read()
+            if not ok or frame is None:
+                time.sleep(0.002)
+                continue
+            with self._lock:
+                self._latest = frame
+
+    def read_latest(self) -> tuple[bool, np.ndarray | None]:
+        with self._lock:
+            if self._latest is None:
+                return False, None
+            return True, self._latest.copy()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self._thread.join(timeout=1.0)
+
+
 def process_image_source(
     image_path: Path,
     segmenter,
@@ -609,26 +652,63 @@ def process_stream_source(
     gray_view: bool = False,
 ) -> Path | None:
     capture_target: int | str = int(stream_source) if stream_source.isdigit() else stream_source
-    capture = cv2.VideoCapture(capture_target)
+    capture: cv2.VideoCapture
+    if isinstance(capture_target, int):
+        gst = _build_mpp_mjpg_gstreamer(device=f"/dev/video{capture_target}")
+        capture = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
+        if not capture.isOpened():
+            capture = cv2.VideoCapture(capture_target)
+    else:
+        capture = cv2.VideoCapture(capture_target)
+
     if not capture.isOpened():
         raise RuntimeError(f"无法打开流: {stream_source}")
 
+    source_name = get_source_stem(stream_source)
+    output_path = None
+    writer = None
+    frame_index = 1
+    grabber = _LatestFrameGrabber(capture).start()
+
     try:
-        return process_video_capture(
-            capture,
-            get_source_stem(stream_source),
-            segmenter,
-            class_names,
-            grid_scale,
-            run_dir,
-            show_local,
-            imshow_state,
-            remote_server,
-            ros2_publisher,
-            gray_view,
-        )
+        while True:
+            ok, frame = grabber.read_latest()
+            if not ok or frame is None:
+                time.sleep(0.002)
+                continue
+
+            if writer is None and run_dir is not None:
+                frame_h, frame_w = frame.shape[:2]
+                current_fps = capture.get(cv2.CAP_PROP_FPS)
+                if not current_fps or current_fps <= 0:
+                    current_fps = 30.0
+                output_path = run_dir / f"{source_name}_planned.mp4"
+                writer = cv2.VideoWriter(
+                    str(output_path),
+                    cv2.VideoWriter_fourcc(*"mp4v"),
+                    current_fps,
+                    (frame_w, frame_h),
+                )
+
+            frame_stem = get_frame_stem(Path(f"{source_name}.mp4"), frame_index)
+            planned, plan_result = render_planned_frame(frame, segmenter, class_names, grid_scale, frame_stem)
+            if ros2_publisher is not None:
+                ros2_publisher.publish(plan_result["grid_handler"])
+            display_frame = to_gray_view_frame(planned, gray_view)
+            if remote_server is not None:
+                remote_server.update_frame(display_frame)
+            if writer is not None:
+                writer.write(planned)
+            if maybe_show_frame(display_frame, show_local and imshow_state["enabled"], imshow_state):
+                break
+            frame_index += 1
     finally:
+        grabber.stop()
+        if writer is not None:
+            writer.release()
         capture.release()
+
+    return output_path
 
 
 def run_realtime_pathplan(

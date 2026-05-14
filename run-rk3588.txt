@@ -5,6 +5,10 @@ RK3588 / 香橙派板端运行说明
 摄像头实时规划（RKNN）
 python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view
 
+说明（2026-05-14 更新）:
+- `--source 0`（或其他本地摄像头序号）会优先尝试 GStreamer + MPP（`mppjpegdec`）进行 MJPG 硬件解码；若当前环境不支持该管道，会自动回退到 OpenCV 默认采集路径。
+- 实时流处理采用“只保留最新帧”策略：当 CPU/NPU 短时跟不上输入帧率时，旧帧会被丢弃以降低端到端时延。这是实时优化的预期行为，不是异常。
+
 
 sudo watch -n1 'echo "=== RKNPU Status ==="; for k in load freq fps; do p=/sys/kernel/debug/rknpu/$k; if [ -r "$p" ]; then printf "%s: " "$k"; cat "$p"; else printf "%s: N/A\n" "$k"; fi; done; echo; echo "=== CPU FREQ (MHz) ==="; for p in /sys/devices/system/cpu/cpufreq/policy*; do if [ -r "$p/scaling_cur_freq" ]; then freq=$(cat "$p/scaling_cur_freq"); echo "$(basename $p): $((freq / 1000)) MHz"; fi; done; echo; echo "=== THERMAL (C) ==="; for t in /sys/class/thermal/thermal_zone*; do if [ -r "$t/temp" ]; then temp=$(cat "$t/temp"); type=$(cat "$t/type"); echo "$type: $((temp / 1000)) C"; fi; done'
 
@@ -116,4 +120,3 @@ python tools/ros2_map_viewer.py \
 - `--z-max-cap`：点云灌注 Z 轴上限（超过该高度会截断）
 - `--xy-spread`：点云 XY 加粗半径（米）
 - `--xy-samples`：点云 XY 加粗采样边长（如 3=3x3）
-
