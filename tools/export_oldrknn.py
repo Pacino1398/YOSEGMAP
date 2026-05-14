@@ -18,7 +18,7 @@
     适合兼容 yolov5-best-rk3588.rknn 这类旧模型结构。
 
 
-新版/普通版 export_rknn.py
+普通版 export_rknn.py
 
     按 ONNX 原始暴露的最终输出导出：
     输入:
