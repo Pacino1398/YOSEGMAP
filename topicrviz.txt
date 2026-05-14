@@ -25,6 +25,22 @@ ros2 topic echo /octomap/occupancy --once
 ros2 topic hz /octomap/occupancy
 python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0
 
+测试口径说明（建议按此流程判断瓶颈）
+1) 发布频率（含重复旧图）
+   命令：`ros2 topic hz /octomap/occupancy`
+   含义：异步发布线程输出频率，可能高于真实新图频率。
+
+2) 新图变化频率（内容变化）
+   命令：`python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0`
+   关注：`newmap_hz`
+   含义：仅当 `OccupancyGrid.data` 发生变化才计数，受场景动态影响很大。
+   结论：`newmap_hz` 低不一定是算力不足，也可能是地图内容本身变化慢。
+
+3) 参数回归检查（避免误判）
+   - 将 `YOSEGMAP_PLAN_EVERY_N_FRAMES` 设为 `1/2/3` 对比；
+   - 若 `publish_hz` 变化明显而 `newmap_hz` 基本不变，说明受“内容变化率”限制更大；
+   - 若两者都明显下降，说明计算链路存在性能瓶颈。
+
 终端3（RViz2）
 rviz2
 
