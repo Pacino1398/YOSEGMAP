@@ -12,7 +12,7 @@
   - ROS2 发布改为异步缓存发布（不阻塞 NPU 推理链路）
   - 后处理 mask 裁剪向量化，降低 CPU 周期占用
   - 推荐实时更新目标：`>= 6 Hz`（优先新地图，不持续复用旧地图）
-  - 新增 `--ros-publish-occ-only`：仅发布高度语义 `OccupancyGrid`，废弃点云依赖
+  - 新增 `--ros-lite-mode`：仅发布高度语义 `OccupancyGrid`，废弃点云依赖
 
 ## 功能
 
@@ -108,7 +108,7 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \
-  --ros-publish-occ-only \
+  --ros-lite-mode \
   --ros-rate 6 \
   --ros-occ-topic /octomap/occupancy \
   --z-max-cap 12.0 \
@@ -167,3 +167,4 @@ python tools/export_rknn.py --onnx ./weights/0414_qy++.onnx --output ./weights/0
 - 导出 `.rknn`：安装 `rknn-toolkit2`
 - RK3588 建议：发布侧尽量与推理侧隔离（例如 `taskset` 绑核），并优先使用 `--cloud-mode edge --z-step 0.8`
 - RViz2 建议：添加 `Map` 插件并订阅 `/octomap/occupancy`，按 costmap 语义观察高度分层（1~100）
+

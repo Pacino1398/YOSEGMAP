@@ -92,7 +92,7 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \
-  --ros-publish-occ-only \
+  --ros-lite-mode \
   --ros-frame-id map \
   --ros-rate 6 \
   --ros-occ-topic /octomap/occupancy \
@@ -108,7 +108,7 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_pathplan.py \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \
-  --ros-publish-occ-only \
+  --ros-lite-mode \
   --ros-rate 6 \
   --z-max-cap 12.0
 
@@ -121,13 +121,29 @@ python app/planning/realtime_pathplan.py \
   --view \
   --ros-publish-2p5d \
   --ros-frame-id map \
-  --ros-rate 2 \
+  --ros-rate 10 \
   --ros-occ-topic /octomap/occupancy \
-  --ros-cloud-topic /octomap/points \
-  --z-step 0.3 \
+  --ros-marker-topic /octomap/markers \
+  --cloud-mode edge \
+  --z-step 0.8 \
   --z-max-cap 12.0 \
-  --xy-spread 0.15 \
-  --xy-samples 3
+  --xy-spread 0.0 \
+  --xy-samples 1
+
+3D 效果模式（Map + MarkerArray）:
+YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
+  --source 0 \
+  --weights ./weights/0414_qy++.rknn \
+  --backend rknn \
+  --data ./data/my.yaml \
+  --display none \
+  --ros-publish-2p5d \
+  --ros-rate 10 \
+  --ros-occ-topic /octomap/occupancy \
+  --ros-marker-topic /octomap/markers \
+  --z-max-cap 12.0 \
+  --cloud-mode edge \
+  --z-step 0.8
 
 2) 验证话题
 ros2 topic list | grep octomap
@@ -142,6 +158,8 @@ python tools/ros2_map_viewer.py \
 - `--view`：本机窗口显示（无桌面不要加）
 - `--conf-thres`：阈值，检测过少可先降到 `0.10`
 - `--ros-publish-2p5d`：开启 ROS2 地图发布
-- `--ros-publish-occ-only`：仅发布高度语义 `OccupancyGrid`（不发布 `PointCloud2`）
+- `--ros-lite-mode`：轻量模式，仅发布高度语义 `OccupancyGrid`（不发布 MarkerArray）
 - `--ros-occ-topic`：发布 `OccupancyGrid` 的话题名（发布端参数）
+- `--ros-marker-topic`：发布 `MarkerArray` 的话题名（3D 可视化轨）
 - `--z-max-cap`：高度语义映射上限（映射到 100）
+

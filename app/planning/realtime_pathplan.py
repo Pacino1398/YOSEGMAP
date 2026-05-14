@@ -84,6 +84,7 @@ class AsyncMapPublisher:
         frame_id: str,
         occ_topic: str,
         cloud_topic: str,
+        marker_topic: str,
         rate_hz: float,
         cell_size: float,
         z_step: float,
@@ -93,7 +94,7 @@ class AsyncMapPublisher:
         cloud_mode: str,
         edge_mode: str,
         z_style: str,
-        ros_publish_occ_only: bool = False,
+        ros_lite_mode: bool = False,
     ) -> None:
         self.enabled = False
         self._period = 1.0 / max(float(rate_hz), 0.1)
@@ -105,16 +106,18 @@ class AsyncMapPublisher:
         self._cloud_mode = cloud_mode
         self._edge_mode = edge_mode
         self._z_style = z_style
-        self._ros_publish_occ_only = bool(ros_publish_occ_only)
+        self._ros_lite_mode = bool(ros_lite_mode)
         self._frame_id = frame_id
         self._occ_topic = occ_topic
         self._cloud_topic = cloud_topic
+        self._marker_topic = marker_topic
         self._error_reported = False
         self._lock = threading.Lock()
         self._grid_cache = None
         self._occ_cache = None
-        self._cloud_cache = None
+        self._marker_cache = None
         self._stamp_ns_cache = 0
+        self._frame_index_cache = 0
         self.is_dirty = False
         self._stop_event = threading.Event()
         self._publisher_thread: threading.Thread | None = None
@@ -125,22 +128,23 @@ class AsyncMapPublisher:
             nav_msgs_msg = importlib.import_module("nav_msgs.msg")
             sensor_msgs_msg = importlib.import_module("sensor_msgs.msg")
             std_msgs_msg = importlib.import_module("std_msgs.msg")
+            visualization_msgs_msg = importlib.import_module("visualization_msgs.msg")
             builtin_time_msg = importlib.import_module("builtin_interfaces.msg")
 
             self._Node = getattr(rclpy_node, "Node")
             self._OccupancyGrid = getattr(nav_msgs_msg, "OccupancyGrid")
-            self._PointCloud2 = getattr(sensor_msgs_msg, "PointCloud2")
-            self._PointField = getattr(sensor_msgs_msg, "PointField")
             self._Header = getattr(std_msgs_msg, "Header")
+            self._Marker = getattr(visualization_msgs_msg, "Marker")
+            self._MarkerArray = getattr(visualization_msgs_msg, "MarkerArray")
             self._BuiltinTime = getattr(builtin_time_msg, "Time")
 
             self._rclpy.init(args=None)
             self._node = self._Node("realtime_pathplan_2p5d_publisher")
             self._occ_pub = self._node.create_publisher(self._OccupancyGrid, self._occ_topic, 10)
-            self._cloud_pub = self._node.create_publisher(self._PointCloud2, self._cloud_topic, 10)
+            self._marker_pub = self._node.create_publisher(self._MarkerArray, self._marker_topic, 10)
             self.enabled = True
             self._node.get_logger().info(
-                f"ROS2 2.5D publisher enabled: occ={self._occ_topic}, cloud={self._cloud_topic}, frame={self._frame_id}"
+                f"ROS2 2.5D publisher enabled: occ={self._occ_topic}, markers={self._marker_topic}, frame={self._frame_id}, lite={self._ros_lite_mode}"
             )
             self._publisher_thread = threading.Thread(target=self._publish_loop, daemon=True)
             self._publisher_thread.start()
@@ -170,12 +174,13 @@ class AsyncMapPublisher:
         msg.nanosec = int(stamp_ns % 1_000_000_000)
         return msg
 
-    def update_data(self, grid_handler, stamp_ns: int) -> None:
+    def update_data(self, grid_handler, stamp_ns: int, frame_index: int = 0) -> None:
         if not self.enabled:
             return
         with self._lock:
             self._grid_cache = grid_handler
             self._stamp_ns_cache = int(stamp_ns)
+            self._frame_index_cache = int(frame_index)
             self.is_dirty = True
 
     def _publish_loop(self) -> None:
@@ -188,23 +193,27 @@ class AsyncMapPublisher:
                     dirty = self.is_dirty
                     grid_handler = self._grid_cache
                     stamp_ns = self._stamp_ns_cache
+                    frame_index = self._frame_index_cache
                     if dirty:
                         self.is_dirty = False
                 if dirty and grid_handler is not None:
                     stamp = self._stamp_from_ns(stamp_ns)
                     occ_msg = self._build_occ_msg(grid_handler, stamp)
-                    cloud_msg = None if self._ros_publish_occ_only else self._build_cloud_msg(grid_handler, stamp)
+                    marker_msg = None
+                    # Build MarkerArray at ~2Hz when source frame index is divisible by 5.
+                    if (not self._ros_lite_mode) and frame_index > 0 and frame_index % 5 == 0:
+                        marker_msg = self._build_marker_msg(grid_handler, stamp)
                     with self._lock:
                         self._occ_cache = occ_msg
-                        self._cloud_cache = cloud_msg
+                        if marker_msg is not None:
+                            self._marker_cache = marker_msg
                 with self._lock:
                     occ_cached = self._occ_cache
-                    cloud_cached = self._cloud_cache
+                    marker_cached = self._marker_cache
                 if occ_cached is not None:
                     self._occ_pub.publish(occ_cached)
-                # Dirty Bit policy: unchanged frames only heartbeat OccupancyGrid.
-                if dirty and (not self._ros_publish_occ_only) and cloud_cached is not None:
-                    self._cloud_pub.publish(cloud_cached)
+                if (not self._ros_lite_mode) and marker_cached is not None and dirty:
+                    self._marker_pub.publish(marker_cached)
             except Exception as exc:
                 if not self._error_reported:
                     print(f"ROS2 发布失败（后续不再重复提示）: {exc}")
@@ -261,89 +270,42 @@ class AsyncMapPublisher:
         # In Map display, choose Costmap-style color interpretation to highlight [1..100] height costs.
         return msg
 
-    def _build_cloud_msg(self, grid_handler, stamp):
-        points: list[tuple[float, float, float, float]] = []
+    def _build_marker_msg(self, grid_handler, stamp):
+        marker_array = self._MarkerArray()
+        blocked = getattr(grid_handler, "blocked_obstacles", set())
+        if not blocked:
+            return marker_array
         heights = getattr(grid_handler, "obstacle_heights", {})
-        all_cells = set(getattr(grid_handler, "blocked_obstacles", set()))
-        cells = all_cells
-        if self._cloud_mode == "edge":
-            if self._edge_mode == "8n":
-                nbs = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
-            else:
-                nbs = ((1, 0), (-1, 0), (0, 1), (0, -1))
-            edge_cells = set()
-            for x, y in all_cells:
-                for dx, dy in nbs:
-                    if (x + dx, y + dy) not in all_cells:
-                        edge_cells.add((x, y))
-                        break
-            cells = edge_cells
         safe_cap = max(self._z_max_cap, 1e-6)
-
-        def _pack_rgb(r: int, g: int, b: int) -> float:
-            rgb_u32 = ((r & 255) << 16) | ((g & 255) << 8) | (b & 255)
-            return struct.unpack("<f", struct.pack("<I", rgb_u32))[0]
-
-        def _height_rgb(z_val: float) -> float:
-            ratio = max(0.0, min(1.0, z_val / safe_cap))
-            r = int(255.0 * ratio)
-            g = int(255.0 * (1.0 - abs(2.0 * ratio - 1.0)))
-            b = int(255.0 * (1.0 - ratio))
-            return _pack_rgb(r, g, b)
-
-        if self._xy_samples <= 1 or self._xy_spread <= 1e-6:
-            xy_offsets = [(0.0, 0.0)]
-        else:
-            side = self._xy_samples
-            step = (2.0 * self._xy_spread) / max(side - 1, 1)
-            xy_offsets = []
-            for ix in range(side):
-                for iy in range(side):
-                    ox = -self._xy_spread + ix * step
-                    oy = -self._xy_spread + iy * step
-                    xy_offsets.append((ox, oy))
-
-        for x, y in cells:
-            z_hi = min(float(heights.get((x, y), 1.0)), self._z_max_cap)
-            z_lo = 0.0
-            cx = (float(x) + 0.5) * self._cell_size
-            cy = (float(y) + 0.5) * self._cell_size
-            if self._z_style == "top":
-                z_values = [z_hi]
-            else:
-                z_values = []
-                z = z_lo
-                while z <= z_hi + 1e-6:
-                    z_values.append(z)
-                    z += self._z_step
-                if not z_values:
-                    z_values = [z_hi]
-            for z_val in z_values:
-                rgb = _height_rgb(z_val)
-                for ox, oy in xy_offsets:
-                    points.append((cx + ox, cy + oy, z_val, rgb))
-
-        msg = self._PointCloud2()
-        msg.header = self._Header()
-        msg.header.stamp = stamp
-        msg.header.frame_id = self._frame_id
-        msg.height = 1
-        msg.width = len(points)
-        msg.fields = [
-            self._PointField(name="x", offset=0, datatype=self._PointField.FLOAT32, count=1),
-            self._PointField(name="y", offset=4, datatype=self._PointField.FLOAT32, count=1),
-            self._PointField(name="z", offset=8, datatype=self._PointField.FLOAT32, count=1),
-            self._PointField(name="rgb", offset=12, datatype=self._PointField.FLOAT32, count=1),
-        ]
-        msg.is_bigendian = False
-        msg.point_step = 16
-        msg.row_step = msg.point_step * msg.width
-        msg.is_dense = True
-        msg.data = b"".join(struct.pack("<ffff", px, py, pz, prgb) for px, py, pz, prgb in points)
-        return msg
+        points = np.asarray(list(blocked), dtype=np.int32)
+        for i, (x_i, y_i) in enumerate(points.tolist()):
+            z = float(heights.get((x_i, y_i), 0.0))
+            z = max(0.01, min(z, self._z_max_cap))
+            ratio = max(0.0, min(1.0, z / safe_cap))
+            m = self._Marker()
+            m.header = self._Header()
+            m.header.stamp = stamp
+            m.header.frame_id = self._frame_id
+            m.ns = "height_cells"
+            m.id = i
+            m.type = self._Marker.CUBE
+            m.action = self._Marker.ADD
+            m.pose.position.x = (float(x_i) + 0.5) * self._cell_size
+            m.pose.position.y = (float(y_i) + 0.5) * self._cell_size
+            m.pose.position.z = z * 0.5
+            m.pose.orientation.w = 1.0
+            m.scale.x = self._cell_size
+            m.scale.y = self._cell_size
+            m.scale.z = z
+            m.color.a = 0.75
+            m.color.r = ratio
+            m.color.g = 1.0 - abs(2.0 * ratio - 1.0)
+            m.color.b = 1.0 - ratio
+            marker_array.markers.append(m)
+        return marker_array
 
     def publish(self, grid_handler) -> None:
-        self.update_data(grid_handler, time.time_ns())
+        self.update_data(grid_handler, time.time_ns(), 0)
 
 
 RealtimeRos2MapPublisher = AsyncMapPublisher
@@ -842,7 +804,7 @@ def process_stream_source(
                 grid_scale,
             )
             if ros2_publisher is not None:
-                ros2_publisher.update_data(plan_result_local["grid_handler"], stamp_ns_local)
+                ros2_publisher.update_data(plan_result_local["grid_handler"], stamp_ns_local, frame_idx_local)
             display_frame_local = to_gray_view_frame(planned_local, gray_view)
             if display_queue.full():
                 try:
@@ -933,11 +895,12 @@ def run_realtime_pathplan(
     remote_port: int = 8080,
     remote_path: str = DEFAULT_REMOTE_PATH,
     ros_publish_2p5d: bool = False,
-    ros_publish_occ_only: bool = False,
+    ros_lite_mode: bool = False,
     ros_frame_id: str = "map",
     ros_rate: float = 2.0,
     ros_occ_topic: str = "/octomap/occupancy",
     ros_cloud_topic: str = "/octomap/points",
+    ros_marker_topic: str = "/octomap/markers",
     cell_size: float = 1.0,
     z_step: float = 0.5,
     z_max_cap: float = 12.0,
@@ -982,6 +945,7 @@ def run_realtime_pathplan(
             frame_id=ros_frame_id,
             occ_topic=ros_occ_topic,
             cloud_topic=ros_cloud_topic,
+            marker_topic=ros_marker_topic,
             rate_hz=ros_rate,
             cell_size=cell_size,
             z_step=z_step,
@@ -991,7 +955,7 @@ def run_realtime_pathplan(
             cloud_mode=cloud_mode,
             edge_mode=edge_mode,
             z_style=z_style,
-            ros_publish_occ_only=ros_publish_occ_only,
+            ros_lite_mode=ros_lite_mode,
         )
         if ros_publish_2p5d
         else None
@@ -1113,12 +1077,14 @@ def parse_args():
     parser.add_argument("--remote-port", type=int, default=8080, help="MJPEG 服务端口")
     parser.add_argument("--remote-path", default=DEFAULT_REMOTE_PATH, help="MJPEG 预览路径")
     parser.add_argument("--view", action="store_true", help="兼容旧参数，等价于 --display local")
-    parser.add_argument("--ros-publish-2p5d", action="store_true", help="发布 ROS2 2.5D 地图（OccupancyGrid + PointCloud2）")
-    parser.add_argument("--ros-publish-occ-only", action="store_true", help="仅发布 OccupancyGrid（高度语义编码），不发布 PointCloud2")
+    parser.add_argument("--ros-publish-2p5d", action="store_true", help="发布 ROS2 2.5D 地图（OccupancyGrid + MarkerArray）")
+    parser.add_argument("--ros-lite-mode", action="store_true", help="轻量模式：仅发布 OccupancyGrid（高度语义编码），不发布 3D Markers")
+    parser.add_argument("--ros-publish-occ-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ros-frame-id", default="map", help="ROS2 frame_id")
     parser.add_argument("--ros-rate", type=float, default=10.0, help="ROS2 发布频率 Hz")
     parser.add_argument("--ros-occ-topic", default="/octomap/occupancy", help="OccupancyGrid 话题名")
-    parser.add_argument("--ros-cloud-topic", default="/octomap/points", help="PointCloud2 话题名")
+    parser.add_argument("--ros-cloud-topic", default="/octomap/points", help=argparse.SUPPRESS)
+    parser.add_argument("--ros-marker-topic", default="/octomap/markers", help="MarkerArray 话题名")
     parser.add_argument("--cell-size", type=float, default=1.0, help="栅格尺寸（米）")
     parser.add_argument("--z-step", type=float, default=0.5, help="点云高度采样步长（米）")
     parser.add_argument("--z-max-cap", type=float, default=12.0, help="点云灌注最大高度上限（米）")
@@ -1162,11 +1128,12 @@ def main():
         remote_port=args.remote_port,
         remote_path=args.remote_path,
         ros_publish_2p5d=args.ros_publish_2p5d,
-        ros_publish_occ_only=args.ros_publish_occ_only,
+        ros_lite_mode=(args.ros_lite_mode or args.ros_publish_occ_only),
         ros_frame_id=args.ros_frame_id,
         ros_rate=args.ros_rate,
         ros_occ_topic=args.ros_occ_topic,
         ros_cloud_topic=args.ros_cloud_topic,
+        ros_marker_topic=args.ros_marker_topic,
         cell_size=args.cell_size,
         z_step=args.z_step,
         z_max_cap=args.z_max_cap,

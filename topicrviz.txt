@@ -11,7 +11,7 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
   --display none \
   --imgsz 640 \
   --ros-publish-2p5d \
-  --ros-publish-occ-only \
+  --ros-lite-mode \
   --ros-frame-id map \
   --ros-rate 6 \
   --ros-occ-topic /octomap/occupancy \
@@ -39,7 +39,7 @@ python app/planning/realtime_pathplan.py \
   --imgsz 640 \
   --gray-view \
   --ros-publish-2p5d \
-  --ros-publish-occ-only \
+  --ros-lite-mode \
   --z-step 0.8
 
 终端2（订阅检查）
@@ -53,3 +53,4 @@ ros2 topic hz /octomap/occupancy
 - 若无桌面环境，可把 `--display local` 改为 `--display none`，订阅流程不变。
 - 2026-05-14 起 realtime 主链路为异步流水线，发布频率可能较旧版本更稳定；话题名与消息类型不变。
 - 若发布频率仍不足，可设置 `YOSEGMAP_PLAN_EVERY_N_FRAMES=2` 降低规划/点云计算频率，优先保证实时更新稳定性。
+
