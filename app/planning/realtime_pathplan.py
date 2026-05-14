@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import queue
 import struct
 import sys
@@ -45,6 +46,12 @@ from app.planning.pathplan_batch import (
 STREAM_SCHEMES = ("rtsp://", "rtmp://", "http://", "https://")
 WINDOW_NAME = "realtime_pathplan"
 DEFAULT_REMOTE_PATH = "/stream.mjpg"
+# Deployment notes:
+# 1) Recommend pinning ROS publish process to LITTLE cores:
+#    taskset -c 0-3 python app/planning/realtime_pathplan.py ...
+#    and keep big cores (4-7) for inference.
+# 2) For lower PointCloud2 serialization overhead, prefer:
+#    --cloud-mode edge --z-step 0.8
 
 
 class MjpegFrameStore:
@@ -70,7 +77,7 @@ class MjpegFrameStore:
         return self.sequence, self.payload
 
 
-class RealtimeRos2MapPublisher:
+class AsyncMapPublisher:
     def __init__(
         self,
         *,
@@ -88,7 +95,6 @@ class RealtimeRos2MapPublisher:
         z_style: str,
     ) -> None:
         self.enabled = False
-        self._last_publish_ts = 0.0
         self._period = 1.0 / max(float(rate_hz), 0.1)
         self._cell_size = max(float(cell_size), 1e-6)
         self._z_step = max(float(z_step), 0.05)
@@ -102,6 +108,12 @@ class RealtimeRos2MapPublisher:
         self._occ_topic = occ_topic
         self._cloud_topic = cloud_topic
         self._error_reported = False
+        self._lock = threading.Lock()
+        self._grid_cache = None
+        self._stamp_ns_cache = 0
+        self.is_dirty = False
+        self._stop_event = threading.Event()
+        self._publisher_thread: threading.Thread | None = None
 
         try:
             self._rclpy = importlib.import_module("rclpy")
@@ -109,12 +121,14 @@ class RealtimeRos2MapPublisher:
             nav_msgs_msg = importlib.import_module("nav_msgs.msg")
             sensor_msgs_msg = importlib.import_module("sensor_msgs.msg")
             std_msgs_msg = importlib.import_module("std_msgs.msg")
+            builtin_time_msg = importlib.import_module("builtin_interfaces.msg")
 
             self._Node = getattr(rclpy_node, "Node")
             self._OccupancyGrid = getattr(nav_msgs_msg, "OccupancyGrid")
             self._PointCloud2 = getattr(sensor_msgs_msg, "PointCloud2")
             self._PointField = getattr(sensor_msgs_msg, "PointField")
             self._Header = getattr(std_msgs_msg, "Header")
+            self._BuiltinTime = getattr(builtin_time_msg, "Time")
 
             self._rclpy.init(args=None)
             self._node = self._Node("realtime_pathplan_2p5d_publisher")
@@ -124,6 +138,8 @@ class RealtimeRos2MapPublisher:
             self._node.get_logger().info(
                 f"ROS2 2.5D publisher enabled: occ={self._occ_topic}, cloud={self._cloud_topic}, frame={self._frame_id}"
             )
+            self._publisher_thread = threading.Thread(target=self._publish_loop, daemon=True)
+            self._publisher_thread.start()
         except Exception as exc:
             print(f"ROS2 发布器初始化失败，已禁用发布: {exc}")
             self.enabled = False
@@ -132,12 +148,59 @@ class RealtimeRos2MapPublisher:
         if not self.enabled:
             return
         try:
+            self._stop_event.set()
+            if self._publisher_thread is not None:
+                self._publisher_thread.join(timeout=1.0)
             self._node.destroy_node()
             if self._rclpy.ok():
                 self._rclpy.shutdown()
         except Exception:
             pass
         self.enabled = False
+
+    def _stamp_from_ns(self, stamp_ns: int):
+        if stamp_ns <= 0:
+            return self._node.get_clock().now().to_msg()
+        msg = self._BuiltinTime()
+        msg.sec = int(stamp_ns // 1_000_000_000)
+        msg.nanosec = int(stamp_ns % 1_000_000_000)
+        return msg
+
+    def update_data(self, grid_handler, stamp_ns: int) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._grid_cache = grid_handler
+            self._stamp_ns_cache = int(stamp_ns)
+            self.is_dirty = True
+
+    def _publish_loop(self) -> None:
+        next_deadline = time.perf_counter()
+        while not self._stop_event.is_set():
+            next_deadline += self._period
+            try:
+                self._rclpy.spin_once(self._node, timeout_sec=0.0)
+                with self._lock:
+                    dirty = self.is_dirty
+                    grid_handler = self._grid_cache
+                    stamp_ns = self._stamp_ns_cache
+                    if dirty:
+                        self.is_dirty = False
+                if dirty and grid_handler is not None:
+                    stamp = self._stamp_from_ns(stamp_ns)
+                    occ_msg = self._build_occ_msg(grid_handler, stamp)
+                    cloud_msg = self._build_cloud_msg(grid_handler, stamp)
+                    self._occ_pub.publish(occ_msg)
+                    self._cloud_pub.publish(cloud_msg)
+            except Exception as exc:
+                if not self._error_reported:
+                    print(f"ROS2 发布失败（后续不再重复提示）: {exc}")
+                    self._error_reported = True
+            sleep_s = next_deadline - time.perf_counter()
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+            else:
+                next_deadline = time.perf_counter()
 
     def _build_occ_msg(self, grid_handler, stamp):
         h = int(grid_handler.grid_h)
@@ -244,23 +307,10 @@ class RealtimeRos2MapPublisher:
         return msg
 
     def publish(self, grid_handler) -> None:
-        if not self.enabled:
-            return
-        now = time.time()
-        if now - self._last_publish_ts < self._period:
-            return
-        self._last_publish_ts = now
-        try:
-            self._rclpy.spin_once(self._node, timeout_sec=0.0)
-            stamp = self._node.get_clock().now().to_msg()
-            occ_msg = self._build_occ_msg(grid_handler, stamp)
-            cloud_msg = self._build_cloud_msg(grid_handler, stamp)
-            self._occ_pub.publish(occ_msg)
-            self._cloud_pub.publish(cloud_msg)
-        except Exception as exc:
-            if not self._error_reported:
-                print(f"ROS2 发布失败（后续不再重复提示）: {exc}")
-                self._error_reported = True
+        self.update_data(grid_handler, time.time_ns())
+
+
+RealtimeRos2MapPublisher = AsyncMapPublisher
 
 
 class ThreadingMjpegServer(server.ThreadingHTTPServer):
@@ -530,6 +580,7 @@ class _LatestFrameGrabber:
         self.capture = capture
         self._lock = threading.Lock()
         self._latest: np.ndarray | None = None
+        self._latest_ts_ns = 0
         self._stopped = threading.Event()
         self._thread = threading.Thread(target=self._worker, daemon=True)
 
@@ -545,12 +596,13 @@ class _LatestFrameGrabber:
                 continue
             with self._lock:
                 self._latest = frame
+                self._latest_ts_ns = time.time_ns()
 
-    def read_latest(self) -> tuple[bool, np.ndarray | None]:
+    def read_latest(self) -> tuple[bool, np.ndarray | None, int]:
         with self._lock:
             if self._latest is None:
-                return False, None
-            return True, self._latest.copy()
+                return False, None, 0
+            return True, self._latest.copy(), self._latest_ts_ns
 
     def stop(self) -> None:
         self._stopped.set()
@@ -712,21 +764,22 @@ def process_stream_source(
     frame_index = 1
     grabber = _LatestFrameGrabber(capture).start()
     stop_event = threading.Event()
-    prep_queue: "queue.Queue[tuple[np.ndarray, str, np.ndarray, tuple[tuple[float, float], tuple[float, float]]]]" = queue.Queue(maxsize=2)
-    post_queue: "queue.Queue[tuple[np.ndarray, str, list[np.ndarray], tuple[tuple[float, float], tuple[float, float]]]]" = queue.Queue(maxsize=2)
+    prep_queue: "queue.Queue[tuple[np.ndarray, str, np.ndarray, tuple[tuple[float, float], tuple[float, float]], int, int]]" = queue.Queue(maxsize=2)
+    post_queue: "queue.Queue[tuple[np.ndarray, str, list[np.ndarray], tuple[tuple[float, float], tuple[float, float]], int, int]]" = queue.Queue(maxsize=2)
     display_queue: "queue.Queue[tuple[np.ndarray, np.ndarray, dict[str, object]]]" = queue.Queue(maxsize=1)
+    planner_every_n = max(1, int(os.getenv("YOSEGMAP_PLAN_EVERY_N_FRAMES", "1")))
 
     def _preprocess_worker() -> None:
         local_index = 1
         while not stop_event.is_set():
-            ok_local, frame_local = grabber.read_latest()
+            ok_local, frame_local, stamp_ns_local = grabber.read_latest()
             if not ok_local or frame_local is None:
                 time.sleep(0.001)
                 continue
             frame_stem_local = get_frame_stem(Path(f"{source_name}.mp4"), local_index)
             input_tensor_local, ratio_pad_local = segmenter.preprocess_frame(frame_local)
             input_tensor_local = np.ascontiguousarray(input_tensor_local)
-            item = (frame_local, frame_stem_local, input_tensor_local, ratio_pad_local)
+            item = (frame_local, frame_stem_local, input_tensor_local, ratio_pad_local, stamp_ns_local, local_index)
             if prep_queue.full():
                 try:
                     prep_queue.get_nowait()
@@ -738,8 +791,10 @@ def process_stream_source(
     def _postprocess_worker() -> None:
         while not stop_event.is_set():
             try:
-                frame_local, frame_stem_local, outputs_local, ratio_pad_local = post_queue.get(timeout=0.05)
+                frame_local, frame_stem_local, outputs_local, ratio_pad_local, stamp_ns_local, frame_idx_local = post_queue.get(timeout=0.05)
             except queue.Empty:
+                continue
+            if frame_idx_local % planner_every_n != 0:
                 continue
             planned_local, plan_result_local = _render_planned_frame_from_outputs(
                 frame_local,
@@ -751,7 +806,7 @@ def process_stream_source(
                 grid_scale,
             )
             if ros2_publisher is not None:
-                ros2_publisher.publish(plan_result_local["grid_handler"])
+                ros2_publisher.update_data(plan_result_local["grid_handler"], stamp_ns_local)
             display_frame_local = to_gray_view_frame(planned_local, gray_view)
             if display_queue.full():
                 try:
@@ -768,7 +823,7 @@ def process_stream_source(
     try:
         while True:
             try:
-                frame, frame_stem, input_tensor, ratio_pad = prep_queue.get(timeout=0.05)
+                frame, frame_stem, input_tensor, ratio_pad, stamp_ns, frame_idx = prep_queue.get(timeout=0.05)
             except queue.Empty:
                 continue
 
@@ -779,7 +834,7 @@ def process_stream_source(
                     post_queue.get_nowait()
                 except queue.Empty:
                     pass
-            post_queue.put_nowait((frame, frame_stem, outputs, ratio_pad))
+            post_queue.put_nowait((frame, frame_stem, outputs, ratio_pad, stamp_ns, frame_idx))
 
             while True:
                 try:

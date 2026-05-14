@@ -84,6 +84,40 @@ python app/planning/realtime_pathplan.py \
 
 [C] 实时发布 ROS2 2.5D 地图（ 见 topicrviz.txt）
 1) 发布（在 realtime 主链路中直接发布）
+推荐（实时更新优先，目标 >=6Hz）:
+YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
+  --source 0 \
+  --weights ./weights/0414_qy++.rknn \
+  --backend rknn \
+  --data ./data/my.yaml \
+  --display none \
+  --ros-publish-2p5d \
+  --ros-frame-id map \
+  --ros-rate 6 \
+  --ros-occ-topic /octomap/occupancy \
+  --ros-cloud-topic /octomap/points \
+  --cloud-mode edge \
+  --edge-mode 4n \
+  --z-style top \
+  --z-step 0.8 \
+  --z-max-cap 12.0 \
+  --xy-spread 0.0 \
+  --xy-samples 1
+
+若仍低于 6Hz（降计算负载）:
+YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_pathplan.py \
+  --source 0 \
+  --weights ./weights/0414_qy++.rknn \
+  --backend rknn \
+  --data ./data/my.yaml \
+  --display none \
+  --ros-publish-2p5d \
+  --ros-rate 6 \
+  --cloud-mode edge \
+  --z-step 0.8 \
+  --xy-samples 1
+
+原始示例:
 python app/planning/realtime_pathplan.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
