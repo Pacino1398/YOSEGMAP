@@ -84,7 +84,7 @@ python app/planning/realtime_pathplan.py \
 
 [C] 实时发布 ROS2 2.5D 地图（ 见 topicrviz.txt）
 1) 发布（在 realtime 主链路中直接发布）
-推荐（实时更新优先，目标 >=6Hz）:
+推荐（高度语义栅格，实时更新优先，目标 >=6Hz）:
 YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
@@ -92,17 +92,13 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \
+  --ros-publish-occ-only \
   --ros-frame-id map \
   --ros-rate 6 \
   --ros-occ-topic /octomap/occupancy \
-  --ros-cloud-topic /octomap/points \
-  --cloud-mode edge \
-  --edge-mode 4n \
-  --z-style top \
-  --z-step 0.8 \
   --z-max-cap 12.0 \
-  --xy-spread 0.0 \
-  --xy-samples 1
+  --cloud-mode edge \
+  --z-step 0.8
 
 若仍低于 6Hz（降计算负载）:
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_pathplan.py \
@@ -112,10 +108,9 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_pathplan.py \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \
+  --ros-publish-occ-only \
   --ros-rate 6 \
-  --cloud-mode edge \
-  --z-step 0.8 \
-  --xy-samples 1
+  --z-max-cap 12.0
 
 原始示例:
 python app/planning/realtime_pathplan.py \
@@ -137,22 +132,16 @@ python app/planning/realtime_pathplan.py \
 2) 验证话题
 ros2 topic list | grep octomap
 ros2 topic hz /octomap/occupancy
-ros2 topic hz /octomap/points
 
 3) 本地订阅可视化
 python tools/ros2_map_viewer.py \
   --occ-topic /octomap/occupancy \
-  --cloud-topic /octomap/points \
   --scale 6
 
 [D] 关键参数速查
 - `--view`：本机窗口显示（无桌面不要加）
 - `--conf-thres`：阈值，检测过少可先降到 `0.10`
 - `--ros-publish-2p5d`：开启 ROS2 地图发布
+- `--ros-publish-occ-only`：仅发布高度语义 `OccupancyGrid`（不发布 `PointCloud2`）
 - `--ros-occ-topic`：发布 `OccupancyGrid` 的话题名（发布端参数）
-- `--ros-cloud-topic`：发布 `PointCloud2` 的话题名（发布端参数）
-- `--cell-size`：栅格对应米数
-- `--z-step`：点云高度采样步长
-- `--z-max-cap`：点云灌注 Z 轴上限（超过该高度会截断）
-- `--xy-spread`：点云 XY 加粗半径（米）
-- `--xy-samples`：点云 XY 加粗采样边长（如 3=3x3）
+- `--z-max-cap`：高度语义映射上限（映射到 100）

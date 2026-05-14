@@ -1,6 +1,5 @@
 话题（统一订阅）
   - `/octomap/occupancy` (`nav_msgs/OccupancyGrid`)
-  - `/octomap/points` (`sensor_msgs/PointCloud2`)
 
 场景A：实时分割 + 2.5D 发布 + 本机可视化
 终端1（发布端）
@@ -12,24 +11,18 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
   --display none \
   --imgsz 640 \
   --ros-publish-2p5d \
+  --ros-publish-occ-only \
   --ros-frame-id map \
   --ros-rate 6 \
   --ros-occ-topic /octomap/occupancy \
-  --ros-cloud-topic /octomap/points \
-  --cloud-mode edge \
-  --edge-mode 4n \
-  --z-style top \
   --z-step 0.8 \
   --z-max-cap 12.0 \
-  --xy-spread 0.0 \
-  --xy-samples 1
+  --cloud-mode edge
 
 终端2（订阅检查）
 ros2 topic list | grep octomap
 ros2 topic echo /octomap/occupancy --once
-ros2 topic echo /octomap/points --once
 ros2 topic hz /octomap/occupancy
-ros2 topic hz /octomap/points
 
 终端3（RViz2）
 rviz2
@@ -42,21 +35,21 @@ python app/planning/realtime_pathplan.py \
   --backend rknn \
   --data ./data/my.yaml \
   --display local \
-  --cloud-mode full \
+  --cloud-mode edge \
   --imgsz 640 \
   --gray-view \
   --ros-publish-2p5d \
-  --xy-samples 2
+  --ros-publish-occ-only \
+  --z-step 0.8
 
 终端2（订阅检查）
 ros2 topic list | grep octomap
 ros2 topic echo /octomap/occupancy --once
-ros2 topic echo /octomap/points --once
 ros2 topic hz /octomap/occupancy
-ros2 topic hz /octomap/points
 
 说明
 - 所有运行命令均已包含 `--ros-publish-2p5d`，都可被订阅。
+- 高度语义通过 `OccupancyGrid` 数值编码（1~100）体现，默认不再依赖 `PointCloud2`。
 - 若无桌面环境，可把 `--display local` 改为 `--display none`，订阅流程不变。
 - 2026-05-14 起 realtime 主链路为异步流水线，发布频率可能较旧版本更稳定；话题名与消息类型不变。
 - 若发布频率仍不足，可设置 `YOSEGMAP_PLAN_EVERY_N_FRAMES=2` 降低规划/点云计算频率，优先保证实时更新稳定性。

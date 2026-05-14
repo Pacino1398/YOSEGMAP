@@ -93,6 +93,7 @@ class AsyncMapPublisher:
         cloud_mode: str,
         edge_mode: str,
         z_style: str,
+        ros_publish_occ_only: bool = False,
     ) -> None:
         self.enabled = False
         self._period = 1.0 / max(float(rate_hz), 0.1)
@@ -104,12 +105,15 @@ class AsyncMapPublisher:
         self._cloud_mode = cloud_mode
         self._edge_mode = edge_mode
         self._z_style = z_style
+        self._ros_publish_occ_only = bool(ros_publish_occ_only)
         self._frame_id = frame_id
         self._occ_topic = occ_topic
         self._cloud_topic = cloud_topic
         self._error_reported = False
         self._lock = threading.Lock()
         self._grid_cache = None
+        self._occ_cache = None
+        self._cloud_cache = None
         self._stamp_ns_cache = 0
         self.is_dirty = False
         self._stop_event = threading.Event()
@@ -189,9 +193,18 @@ class AsyncMapPublisher:
                 if dirty and grid_handler is not None:
                     stamp = self._stamp_from_ns(stamp_ns)
                     occ_msg = self._build_occ_msg(grid_handler, stamp)
-                    cloud_msg = self._build_cloud_msg(grid_handler, stamp)
-                    self._occ_pub.publish(occ_msg)
-                    self._cloud_pub.publish(cloud_msg)
+                    cloud_msg = None if self._ros_publish_occ_only else self._build_cloud_msg(grid_handler, stamp)
+                    with self._lock:
+                        self._occ_cache = occ_msg
+                        self._cloud_cache = cloud_msg
+                with self._lock:
+                    occ_cached = self._occ_cache
+                    cloud_cached = self._cloud_cache
+                if occ_cached is not None:
+                    self._occ_pub.publish(occ_cached)
+                # Dirty Bit policy: unchanged frames only heartbeat OccupancyGrid.
+                if dirty and (not self._ros_publish_occ_only) and cloud_cached is not None:
+                    self._cloud_pub.publish(cloud_cached)
             except Exception as exc:
                 if not self._error_reported:
                     print(f"ROS2 发布失败（后续不再重复提示）: {exc}")
@@ -206,9 +219,29 @@ class AsyncMapPublisher:
         h = int(grid_handler.grid_h)
         w = int(grid_handler.grid_w)
         occ = np.zeros((h, w), dtype=np.int8)
-        for x, y in getattr(grid_handler, "blocked_obstacles", set()):
-            if 0 <= x < w and 0 <= y < h:
-                occ[y, x] = 100
+        blocked = getattr(grid_handler, "blocked_obstacles", set())
+        if blocked:
+            points = np.asarray(list(blocked), dtype=np.int32)
+            xs_all = points[:, 0]
+            ys_all = points[:, 1]
+            valid = (xs_all >= 0) & (xs_all < w) & (ys_all >= 0) & (ys_all < h)
+            xs = xs_all[valid]
+            ys = ys_all[valid]
+            if xs.size > 0:
+                heights = getattr(grid_handler, "obstacle_heights", {})
+                if heights:
+                    z_vals = np.asarray(
+                        [float(heights.get((int(x), int(y)), 0.0)) for x, y in zip(xs.tolist(), ys.tolist())],
+                        dtype=np.float32,
+                    )
+                else:
+                    z_vals = np.zeros((xs.shape[0],), dtype=np.float32)
+                safe_cap = max(self._z_max_cap, 1e-6)
+                scaled = np.minimum((z_vals / safe_cap) * 100.0, 100.0)
+                costs = scaled.astype(np.int16, copy=False)
+                costs = np.clip(costs, 0, 100).astype(np.int8, copy=False)
+                costs = np.where((z_vals <= 0.0) & (costs == 0), 1, costs).astype(np.int8, copy=False)
+                occ[ys, xs] = costs
 
         msg = self._OccupancyGrid()
         msg.header = self._Header()
@@ -222,7 +255,10 @@ class AsyncMapPublisher:
         msg.info.origin.position.y = 0.0
         msg.info.origin.position.z = 0.0
         msg.info.origin.orientation.w = 1.0
-        msg.data = occ.reshape(-1).tolist()
+        msg.data = np.ascontiguousarray(occ).reshape(-1).tolist()
+        # RViz2 tip:
+        # Add "Map" display -> topic: /octomap/occupancy
+        # In Map display, choose Costmap-style color interpretation to highlight [1..100] height costs.
         return msg
 
     def _build_cloud_msg(self, grid_handler, stamp):
@@ -897,6 +933,7 @@ def run_realtime_pathplan(
     remote_port: int = 8080,
     remote_path: str = DEFAULT_REMOTE_PATH,
     ros_publish_2p5d: bool = False,
+    ros_publish_occ_only: bool = False,
     ros_frame_id: str = "map",
     ros_rate: float = 2.0,
     ros_occ_topic: str = "/octomap/occupancy",
@@ -954,6 +991,7 @@ def run_realtime_pathplan(
             cloud_mode=cloud_mode,
             edge_mode=edge_mode,
             z_style=z_style,
+            ros_publish_occ_only=ros_publish_occ_only,
         )
         if ros_publish_2p5d
         else None
@@ -1076,6 +1114,7 @@ def parse_args():
     parser.add_argument("--remote-path", default=DEFAULT_REMOTE_PATH, help="MJPEG 预览路径")
     parser.add_argument("--view", action="store_true", help="兼容旧参数，等价于 --display local")
     parser.add_argument("--ros-publish-2p5d", action="store_true", help="发布 ROS2 2.5D 地图（OccupancyGrid + PointCloud2）")
+    parser.add_argument("--ros-publish-occ-only", action="store_true", help="仅发布 OccupancyGrid（高度语义编码），不发布 PointCloud2")
     parser.add_argument("--ros-frame-id", default="map", help="ROS2 frame_id")
     parser.add_argument("--ros-rate", type=float, default=10.0, help="ROS2 发布频率 Hz")
     parser.add_argument("--ros-occ-topic", default="/octomap/occupancy", help="OccupancyGrid 话题名")
@@ -1123,6 +1162,7 @@ def main():
         remote_port=args.remote_port,
         remote_path=args.remote_path,
         ros_publish_2p5d=args.ros_publish_2p5d,
+        ros_publish_occ_only=args.ros_publish_occ_only,
         ros_frame_id=args.ros_frame_id,
         ros_rate=args.ros_rate,
         ros_occ_topic=args.ros_occ_topic,
