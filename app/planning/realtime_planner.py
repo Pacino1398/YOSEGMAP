@@ -21,8 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config import DEFAULT_CONFIG
-from app.inference.onnx_realtime import (
-    OnnxRealtimeSegmenter,
+from app.inference.realtime_common import (
     detections_to_mask_entries,
     extract_prediction_and_proto,
     get_default_data_yaml,
@@ -441,20 +440,6 @@ def get_source_stem(source: str | Path) -> str:
     return Path(source).stem
 
 
-def resolve_backend(backend: str, weights: str | Path | None) -> str:
-    if backend != "auto":
-        return backend
-    if weights is None:
-        default_weights = get_default_realtime_weights()
-        return "rknn" if default_weights.suffix.lower() == ".rknn" else "onnx"
-    suffix = Path(weights).suffix.lower()
-    if suffix == ".rknn":
-        return "rknn"
-    if suffix == ".onnx":
-        return "onnx"
-    raise ValueError(f"无法根据权重后缀自动判断 realtime 后端: {weights}")
-
-
 def normalize_display_mode(display: str | None, view: bool) -> str:
     if display is not None:
         return display
@@ -470,36 +455,20 @@ def should_stream_remote(display: str) -> bool:
 
 
 def create_segmenter(
-    backend: str,
     weights: str | Path | None,
     data_yaml: str | Path | None,
     device: str | None,
     imgsz: int | tuple[int, int],
     conf_thres: float | None,
     iou_thres: float,
-    dnn: bool,
-    half: bool,
 ):
-    if backend == "rknn":
-        return RknnRealtimeSegmenter(
-            weights=weights,
-            data_yaml=data_yaml,
-            device=device,
-            imgsz=imgsz,
-            conf_thres=conf_thres,
-            iou_thres=iou_thres,
-            dnn=dnn,
-            half=half,
-        )
-    return OnnxRealtimeSegmenter(
+    return RknnRealtimeSegmenter(
         weights=weights,
         data_yaml=data_yaml,
         device=device,
         imgsz=imgsz,
         conf_thres=conf_thres,
         iou_thres=iou_thres,
-        dnn=dnn,
-        half=half,
     )
 
 
@@ -1019,9 +988,6 @@ def run_realtime_pathplan(
     grid_scale: int | None = None,
     view: bool = False,
     save: bool = False,
-    dnn: bool = False,
-    half: bool = False,
-    backend: str = "auto",
     display: str | None = None,
     remote_host: str = "0.0.0.0",
     remote_port: int = 8080,
@@ -1049,8 +1015,9 @@ def run_realtime_pathplan(
 ) -> Path | None:
     source_value = resolve_source(source)
     current_grid_scale = grid_scale if grid_scale is not None else DEFAULT_CONFIG.default_grid_scale
-    selected_backend = resolve_backend(backend, weights)
     selected_weights = weights if weights is not None else get_default_realtime_weights()
+    if Path(selected_weights).suffix.lower() != ".rknn":
+        raise ValueError(f"run_realtime_pathplan 仅支持 .rknn 权重，当前收到: {selected_weights}")
     display_mode = normalize_display_mode(display, view)
     show_local = should_show_local(display_mode)
     enable_remote = should_stream_remote(display_mode)
@@ -1062,17 +1029,14 @@ def run_realtime_pathplan(
         print(f"路径规划输出目录: {run_dir}")
 
     segmenter = create_segmenter(
-        selected_backend,
         selected_weights,
         data_yaml,
         device,
         imgsz,
         conf_thres,
         iou_thres,
-        dnn,
-        half,
     )
-    print(f"实时推理后端: {selected_backend} | 权重: {selected_weights}")
+    print(f"实时推理后端: rknn | 权重: {selected_weights}")
     class_names = load_class_names(resolve_path(data_yaml, get_default_data_yaml()))
     imshow_state = {"enabled": show_local, "warned": False}
     remote_server = MjpegStreamServer(remote_host, remote_port, normalized_remote_path) if enable_remote else None
@@ -1205,10 +1169,9 @@ def run_realtime_pathplan(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="使用 ONNX 或 RKNN 分割结果直接做实时路径规划，不经过 mask 落盘中转。")
+    parser = argparse.ArgumentParser(description="使用 RKNN 分割结果直接做实时路径规划，不经过 mask 落盘中转。")
     parser.add_argument("--source", default=str(get_default_source_dir()), help="输入图片、视频、目录、摄像头索引或流地址")
-    parser.add_argument("--weights", default=str(get_default_realtime_weights()), help="实时分割权重路径，支持 .onnx 或 .rknn")
-    parser.add_argument("--backend", choices=("auto", "onnx", "rknn"), default="auto", help="实时推理后端")
+    parser.add_argument("--weights", default=str(get_default_realtime_weights()), help="实时分割权重路径，仅支持 .rknn")
     parser.add_argument("--data", default=str(get_default_data_yaml()), help="数据配置 yaml")
     parser.add_argument("--project", type=Path, default=get_default_pathplan_project_dir(), help="路径规划输出根目录")
     parser.add_argument("--device", default=DEFAULT_CONFIG.default_device, help="推理设备")
@@ -1243,8 +1206,6 @@ def parse_args():
     parser.add_argument("--map-only", action="store_true", help="仅建图与发布，不执行路径规划")
     parser.add_argument("--planner-rate", type=float, default=1.0, help="路径规划最大执行频率 Hz（map-only=false 时生效）")
     parser.add_argument("--nosave", action="store_true", help="只显示不保存输出（默认已不保存）")
-    parser.add_argument("--dnn", action="store_true", help="使用 OpenCV DNN 加载 ONNX")
-    parser.add_argument("--half", action="store_true", help="启用 FP16")
     return parser.parse_args()
 
 
@@ -1268,9 +1229,6 @@ def main():
         grid_scale=args.grid_scale,
         view=args.view,
         save=not args.nosave,
-        dnn=args.dnn,
-        half=args.half,
-        backend=args.backend,
         display=args.display,
         remote_host=args.remote_host,
         remote_port=args.remote_port,

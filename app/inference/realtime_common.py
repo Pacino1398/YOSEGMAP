@@ -12,9 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config import DEFAULT_CONFIG
-from app.paths import resolve_path
 
-MANUAL_ONNX_WEIGHTS: str | Path | None = None
 MANUAL_DATA_YAML: str | Path | None = None
 MANUAL_RKNN_WEIGHTS: str | Path | None = None
 
@@ -27,21 +25,6 @@ def _resolve_manual_path(value: str | Path | None, default: Path) -> Path:
     if not path.is_absolute():
         path = DEFAULT_CONFIG.repo_root / path
     return path.resolve()
-
-
-def get_default_onnx_weights() -> Path:
-    if MANUAL_ONNX_WEIGHTS is not None:
-        return _resolve_manual_path(MANUAL_ONNX_WEIGHTS, DEFAULT_CONFIG.default_weights.with_suffix(".onnx"))
-
-    default_onnx = DEFAULT_CONFIG.default_weights.with_suffix(".onnx")
-    if default_onnx.exists():
-        return default_onnx.resolve()
-
-    candidates = sorted(DEFAULT_CONFIG.default_weights.parent.glob("*.onnx"))
-    if candidates:
-        return candidates[0].resolve()
-
-    return default_onnx.resolve()
 
 
 def get_default_rknn_weights() -> Path:
@@ -60,21 +43,17 @@ def get_default_rknn_weights() -> Path:
 
 
 def get_default_realtime_weights() -> Path:
-    for candidate in (get_default_rknn_weights(), get_default_onnx_weights()):
-        if candidate.exists():
-            return candidate.resolve()
+    candidate = get_default_rknn_weights()
+    if candidate.exists():
+        return candidate.resolve()
+    candidates = sorted(DEFAULT_CONFIG.default_weights.parent.glob("*.rknn"))
+    if candidates:
+        return candidates[0].resolve()
     return get_default_rknn_weights().resolve()
 
 
 def get_default_data_yaml() -> Path:
     return _resolve_manual_path(MANUAL_DATA_YAML, DEFAULT_CONFIG.data_yaml)
-
-
-def ensure_onnx_weights_path(weights: str | Path) -> Path:
-    weights_path = Path(weights)
-    if weights_path.suffix.lower() != ".onnx":
-        raise ValueError(f"realtime ONNX 后端要求 .onnx 权重，当前收到: {weights_path}")
-    return weights_path
 
 
 def ensure_rknn_weights_path(weights: str | Path) -> Path:
@@ -97,29 +76,32 @@ def detections_to_mask_entries(
     masks: np.ndarray,
     frame_stem: str,
 ) -> list[list]:
-    detection_rows = detections.tolist() if isinstance(detections, np.ndarray) else [list(row) for row in detections]
+    if isinstance(detections, np.ndarray):
+        det_array = detections
+    else:
+        det_array = np.asarray(list(detections), dtype=np.float32)
 
-    if not detection_rows:
+    if det_array.size == 0:
+        return []
+    if det_array.ndim != 2 or det_array.shape[1] < 6:
         return []
 
     if masks.ndim == 2:
         masks = masks[:, :, None]
     if masks.ndim != 3:
         raise ValueError(f"masks 必须是 HxW 或 HxWxN，当前 shape={masks.shape}")
-    if masks.shape[2] != len(detection_rows):
+    if masks.shape[2] != det_array.shape[0]:
         raise ValueError(
-            f"检测数量与 mask 数量不一致: detections={len(detection_rows)} masks={masks.shape[2]}"
+            f"检测数量与 mask 数量不一致: detections={det_array.shape[0]} masks={masks.shape[2]}"
         )
 
     mask_entries: list[list] = []
-    for mask_index, det in enumerate(detection_rows):
-        if len(det) < 6:
-            continue
-
+    for mask_index in range(det_array.shape[0]):
+        det = det_array[mask_index]
         class_id = int(det[5])
         confidence = float(det[4])
         mask = masks[:, :, mask_index]
-        binary_mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+        binary_mask = (mask > 0).astype(np.uint8, copy=False) * 255
         if not np.any(binary_mask):
             continue
 
@@ -173,6 +155,29 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thres: float, max_det: int) 
     if len(boxes) == 0:
         return np.empty((0,), dtype=np.int64)
 
+    # Prefer OpenCV NMS (C++ path) to reduce Python-loop overhead.
+    try:
+        boxes_xywh = np.empty_like(boxes, dtype=np.float32)
+        boxes_xywh[:, 0] = boxes[:, 0]
+        boxes_xywh[:, 1] = boxes[:, 1]
+        boxes_xywh[:, 2] = np.maximum(0.0, boxes[:, 2] - boxes[:, 0])
+        boxes_xywh[:, 3] = np.maximum(0.0, boxes[:, 3] - boxes[:, 1])
+        kept = cv2.dnn.NMSBoxes(
+            bboxes=boxes_xywh.tolist(),
+            scores=scores.astype(np.float32, copy=False).tolist(),
+            score_threshold=0.0,
+            nms_threshold=float(iou_thres),
+            top_k=max_det,
+        )
+        if kept is None or len(kept) == 0:
+            return np.empty((0,), dtype=np.int64)
+        kept_arr = np.asarray(kept).reshape(-1).astype(np.int64, copy=False)
+        if kept_arr.size > max_det:
+            kept_arr = kept_arr[:max_det]
+        return kept_arr
+    except Exception:
+        pass
+
     order = scores.argsort()[::-1]
     keep: list[int] = []
 
@@ -218,12 +223,12 @@ def _crop_masks_vectorized(masks: np.ndarray, boxes: np.ndarray) -> np.ndarray:
     x2 = np.clip(np.ceil(boxes[:, 2]).astype(np.int32), 0, w)
     y2 = np.clip(np.ceil(boxes[:, 3]).astype(np.int32), 0, h)
 
-    xs = np.arange(w, dtype=np.int32)[None, None, :]
-    ys = np.arange(h, dtype=np.int32)[None, :, None]
-    valid_x = (xs >= x1[:, None, None]) & (xs < x2[:, None, None])
-    valid_y = (ys >= y1[:, None, None]) & (ys < y2[:, None, None])
-    keep = valid_x & valid_y
-    return masks * keep.astype(masks.dtype, copy=False)
+    cropped = np.zeros_like(masks, dtype=masks.dtype)
+    for i in range(n):
+        if x2[i] <= x1[i] or y2[i] <= y1[i]:
+            continue
+        cropped[i, y1[i] : y2[i], x1[i] : x2[i]] = masks[i, y1[i] : y2[i], x1[i] : x2[i]]
+    return cropped
 
 
 def _normalize_prediction(prediction: np.ndarray, mask_dim: int) -> np.ndarray:
@@ -264,15 +269,12 @@ def _normalize_proto(proto: np.ndarray) -> np.ndarray:
 
 def _resize_masks(masks: np.ndarray, output_shape: tuple[int, int]) -> np.ndarray:
     output_h, output_w = output_shape
-    resized_masks: list[np.ndarray] = []
-    for index in range(masks.shape[2]):
-        resized = cv2.resize(masks[:, :, index], (output_w, output_h), interpolation=cv2.INTER_LINEAR)
-        resized_masks.append(resized)
-
-    if not resized_masks:
+    if masks.shape[2] == 0:
         return np.zeros((output_h, output_w, 0), dtype=np.float32)
-
-    return np.stack(resized_masks, axis=2).astype(np.float32, copy=False)
+    resized = cv2.resize(masks, (output_w, output_h), interpolation=cv2.INTER_LINEAR)
+    if resized.ndim == 2:
+        resized = resized[:, :, None]
+    return resized.astype(np.float32, copy=False)
 
 
 def _resolve_imgsz(imgsz: int | tuple[int, int]) -> tuple[int, int]:
@@ -443,94 +445,3 @@ def postprocess_segmentation_outputs(
     scaled_boxes = _scale_boxes_from_letterbox(boxes, frame_shape, ratio_pad)
     detections = np.column_stack((scaled_boxes, scores, class_ids)).astype(np.float32, copy=False)
     return detections, binary_masks
-
-
-class OnnxRealtimeSegmenter:
-    def __init__(
-        self,
-        weights: str | Path | None = None,
-        data_yaml: str | Path | None = None,
-        device: str | None = None,
-        imgsz: int | tuple[int, int] = 640,
-        conf_thres: float | None = None,
-        iou_thres: float = 0.45,
-        max_det: int = 1000,
-        dnn: bool = False,
-        half: bool = False,
-        classes: Sequence[int] | None = None,
-        agnostic_nms: bool = False,
-    ):
-        try:
-            import onnxruntime as ort
-        except ModuleNotFoundError as exc:
-            raise ModuleNotFoundError("ONNX realtime 推理需要先安装 onnxruntime。") from exc
-
-        weights_path = ensure_onnx_weights_path(resolve_path(weights, get_default_onnx_weights()))
-        data_yaml_path = resolve_path(data_yaml, get_default_data_yaml())
-
-        self.weights = weights_path
-        self.data_yaml = data_yaml_path
-        self.device = device or DEFAULT_CONFIG.default_device
-        self.imgsz = _resolve_imgsz(imgsz)
-        self.conf_thres = conf_thres if conf_thres is not None else DEFAULT_CONFIG.default_conf_thres
-        self.iou_thres = iou_thres
-        self.max_det = max_det
-        self.classes = set(classes) if classes is not None else None
-        self.agnostic_nms = agnostic_nms
-        self.dnn = dnn
-        self.half = half
-        self.ort = ort
-
-        providers = self._select_providers(self.device)
-        self.session = ort.InferenceSession(str(self.weights), providers=providers)
-        self.input_name = self.session.get_inputs()[0].name
-        self.output_names = [output.name for output in self.session.get_outputs()]
-
-    def _select_providers(self, device: str | None) -> list[str]:
-        available = set(self.ort.get_available_providers())
-        device_name = (device or "cpu").lower()
-        if device_name != "cpu" and "CUDAExecutionProvider" in available:
-            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        return ["CPUExecutionProvider"]
-
-    def preprocess_frame(
-        self,
-        frame: np.ndarray,
-    ) -> tuple[np.ndarray, tuple[tuple[float, float], tuple[float, float]]]:
-        if not isinstance(frame, np.ndarray) or frame.ndim != 3:
-            raise ValueError("frame 必须是 HxWxC 的 numpy.ndarray")
-
-        letterboxed, ratio, pad = _letterbox(frame, self.imgsz)
-        image = cv2.cvtColor(letterboxed, cv2.COLOR_BGR2RGB)
-        image = image.transpose((2, 0, 1)).astype(np.float32, copy=False)
-        image /= 255.0
-        return np.expand_dims(np.ascontiguousarray(image), axis=0), (ratio, pad)
-
-    def _run_inference(self, input_tensor: np.ndarray) -> list[np.ndarray]:
-        outputs = self.session.run(self.output_names, {self.input_name: input_tensor})
-        return [np.asarray(output) for output in outputs]
-
-    def predict_frame(self, frame: np.ndarray, frame_stem: str) -> list[list]:
-        input_tensor, ratio_pad = self.preprocess_frame(frame)
-        outputs = self._run_inference(input_tensor)
-        prediction, proto = extract_prediction_and_proto(outputs, "ONNX")
-        detections, masks = postprocess_segmentation_outputs(
-            prediction,
-            proto,
-            frame.shape[:2],
-            self.imgsz,
-            ratio_pad,
-            self.conf_thres,
-            self.iou_thres,
-            self.max_det,
-            self.classes,
-            self.agnostic_nms,
-        )
-        return detections_to_mask_entries(detections, masks, frame_stem)
-
-    def predict_image(self, image_path: str | Path) -> list[list]:
-        image_path = Path(image_path)
-        frame = cv2.imread(str(image_path))
-        if frame is None:
-            raise FileNotFoundError(f"无法读取图片: {image_path}")
-        return self.predict_frame(frame, image_path.stem)

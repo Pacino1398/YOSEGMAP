@@ -1,6 +1,6 @@
 # YosegMap
 
-基于 YOLOv5 分割结果的栅格化与 D* Lite 路径规划工程，支持 `PT / ONNX / RKNN` 三条链路。  
+基于 YOLOv5 分割结果的栅格化与 D* Lite 路径规划工程。  
 当前主流程：在原始视频帧上实时叠加障碍物、目标点和规划路径。
 
 ## 当前版本
@@ -26,7 +26,6 @@
 ## 功能
 
 - PT 离线分割与落盘
-- ONNX 实时分割 + 路径规划
 - RKNN（RK3588）实时分割 + 路径规划
 - 本机窗口 / 远端 MJPEG / 双显示 / 无显示
 - 支持将 `octomap` 占据图以 ROS2 图像话题发布
@@ -36,7 +35,7 @@
 ```text
 .
 ├─app/
-│  ├─inference/         # PT/ONNX/RKNN 推理入口
+│  ├─inference/         # PT 离线推理 + RKNN 实时推理入口
 │  ├─mapping/           # mask -> 栅格/2.5D 地图
 │  └─planning/          # 路径规划与渲染
 ├─data/                 # 类别配置
@@ -82,30 +81,19 @@ python app/inference/segmentation.py \
   --load-masks
 ```
 
-### 2) 实时路径规划（ONNX/RKNN）
+### 2) 实时路径规划（RKNN）
 
-ONNX：
-
-```bash
-python app/planning/realtime_planner.py \
-  --source 0 \
-  --weights ./weights/0414_qy++.onnx \
-  --backend onnx \
-  --data ./data/my.yaml \
-  --device cpu \
-  --display local
-```
-
-RKNN（新入口，推荐）：
+RKNN（推荐）：
 
 ```bash
 python app/planning/realtime_planner.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
   --data ./data/my.yaml \
   --display local
 ```
+
+说明：`realtime_planner.py` 现为 RKNN 专一化入口，权重必须是 `.rknn`，并已移除 `--backend`、`--dnn`、`--half` 参数。
 
 RK3588（推荐实时发布配置，目标 >=6Hz）：
 
@@ -113,7 +101,6 @@ RK3588（推荐实时发布配置，目标 >=6Hz）：
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \

@@ -1,11 +1,11 @@
 RK3588 运行命令（Linux/bash，可直接执行）
+说明：realtime_planner 已 RKNN 专一化，权重必须为 .rknn；旧参数 --backend/--dnn/--half 已移除。
 
 
 1) 建图优先（推荐，实时更新）
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \
@@ -20,7 +20,6 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \
@@ -35,7 +34,6 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \
@@ -53,7 +51,6 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
   --source ./01.mp4 \
   --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
   --data ./data/my.yaml \
   --display none \
   --ros-publish-2p5d \

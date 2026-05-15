@@ -10,7 +10,7 @@ from http import server
 import cv2
 import numpy as np
 
-from app.inference.onnx_realtime import (
+from app.inference.realtime_common import (
     detections_to_mask_entries,
     extract_prediction_and_proto,
     postprocess_segmentation_outputs,
@@ -359,7 +359,7 @@ def map_from_outputs(
     map_only: bool = False,
     planner_state: dict[str, object] | None = None,
 ) -> MappingResult:
-    backend_name = "RKNN" if isinstance(segmenter, RknnRealtimeSegmenter) else "ONNX"
+    backend_name = "RKNN"
     t_post0 = time.perf_counter()
     prediction, proto = extract_prediction_and_proto(outputs, backend_name)
     detections, masks = postprocess_segmentation_outputs(

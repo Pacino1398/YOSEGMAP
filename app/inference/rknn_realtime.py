@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 from app.config import DEFAULT_CONFIG
 from app.paths import resolve_path
-from app.inference.onnx_realtime import (
+from app.inference.realtime_common import (
     detections_to_mask_entries,
     ensure_rknn_weights_path,
     extract_prediction_and_proto,
@@ -34,15 +34,10 @@ class RknnRealtimeSegmenter:
         conf_thres: float | None = None,
         iou_thres: float = 0.45,
         max_det: int = 1000,
-        dnn: bool = False,
-        half: bool = False,
         classes: Sequence[int] | None = None,
         agnostic_nms: bool = False,
         target: str = "rk3588",
-        core_mask: int | None = None,
     ):
-        del dnn, half
-
         weights_path = ensure_rknn_weights_path(resolve_path(weights, get_default_rknn_weights()))
         data_yaml_path = resolve_path(data_yaml, get_default_data_yaml())
 
@@ -56,7 +51,6 @@ class RknnRealtimeSegmenter:
         self.classes = set(classes) if classes is not None else None
         self.agnostic_nms = agnostic_nms
         self.target = target
-        self.core_mask = core_mask
 
         runtime_backend = None
         import_error = None
@@ -70,8 +64,8 @@ class RknnRealtimeSegmenter:
                 raise RuntimeError(f"RKNNLite 加载模型失败，返回码: {status}")
 
             init_kwargs: dict[str, object] = {}
-            if self.core_mask is not None and hasattr(RKNNLite, "NPU_CORE_AUTO"):
-                init_kwargs["core_mask"] = self.core_mask
+            if hasattr(RKNNLite, "NPU_CORE_AUTO"):
+                init_kwargs["core_mask"] = RKNNLite.NPU_CORE_AUTO
             status = self.runtime.init_runtime(**init_kwargs)
             if status != 0:
                 raise RuntimeError(f"RKNNLite 初始化运行时失败，返回码: {status}")
