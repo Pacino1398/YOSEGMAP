@@ -14,6 +14,9 @@
   - 推荐实时更新目标：`>= 6 Hz`（优先新地图，不持续复用旧地图）
   - 新增 `--ros-lite-mode`：仅发布高度语义 `OccupancyGrid`，废弃点云依赖
   - 模块拆分：`realtime_planner.py`（调度）+ `realtime_mapping.py`（映射/发布）
+  - `DStarLite` 开放列表改为堆（`heapq`），降低规划阶段线性扫描开销
+  - 后处理新增跨帧 `planner_state` 复用与增量障碍更新，减少每帧重建规划器
+  - 减少 `post` 阶段重复对象构建与集合/字典转换
 
 ## 架构拆分
 
@@ -122,6 +125,25 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
   --cloud-mode edge
 ```
 
+PowerShell 写法（Windows）：
+
+```powershell
+$env:YOSEGMAP_PLAN_EVERY_N_FRAMES = "2"
+python app/planning/realtime_planner.py `
+  --source 0 `
+  --weights .\weights\0414_qy++.rknn `
+  --backend rknn `
+  --data .\data\my.yaml `
+  --display none `
+  --ros-publish-2p5d `
+  --ros-lite-mode `
+  --ros-rate 6 `
+  --ros-occ-topic /octomap/occupancy `
+  --z-max-cap 12.0 `
+  --z-step 0.8 `
+  --cloud-mode edge
+```
+
 若发布仍低于 6Hz，可降载：
 
 ```bash
@@ -139,6 +161,8 @@ python app/planning/realtime_planner.py ... --perf-log --map-only
 ```text
 [perf] prep=xx.xxms infer=xx.xxms post=xx.xxms postprocess=xx.xxms planning=xx.xxms render=xx.xxms total=xx.xxms (n=10)
 ```
+
+优化后预期：`planning` 和 `post` 会较旧版本下降，`planner_state` 可复用时改善更明显。
 
 远端预览（MJPEG）：
 

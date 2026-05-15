@@ -357,6 +357,7 @@ def map_from_outputs(
     class_names: dict[int, str],
     grid_scale: int,
     map_only: bool = False,
+    planner_state: dict[str, object] | None = None,
 ) -> MappingResult:
     backend_name = "RKNN" if isinstance(segmenter, RknnRealtimeSegmenter) else "ONNX"
     t_post0 = time.perf_counter()
@@ -384,18 +385,59 @@ def map_from_outputs(
     start = (grid_w // 2, grid_h // 2)
     goal = target_point if target_point is not None else (max(0, grid_w - 5), max(0, grid_h - 5))
     path: list[tuple[int, int]] = []
+    obs_set = obs if isinstance(obs, set) else set(obs)
+    passable_raw = grid_handler.traversable_obstacles
+    passable_set = passable_raw if isinstance(passable_raw, set) else set(passable_raw)
+    terrain_raw = grid_handler.terrain_penalties
+    terrain_map = terrain_raw if isinstance(terrain_raw, dict) else dict(terrain_raw)
     if not map_only:
         from app.planning.dstar_lite import DStarLite
 
-        planner = DStarLite(
-            start,
-            goal,
-            obs,
-            grid_w,
-            grid_h,
-            passable_obs=grid_handler.traversable_obstacles,
-            terrain_penalties=grid_handler.terrain_penalties,
-        )
+        planner = None
+        reusable = False
+        if planner_state is not None:
+            prev = planner_state.get("planner")
+            if prev is not None:
+                same_shape = planner_state.get("grid_w") == grid_w and planner_state.get("grid_h") == grid_h
+                same_passable = planner_state.get("passable_obs") == passable_set
+                same_terrain = planner_state.get("terrain_penalties") == terrain_map
+                if same_shape and same_passable and same_terrain:
+                    prev_obs = planner_state.get("obs_set")
+                    if not isinstance(prev_obs, set):
+                        prev_obs = set(prev_obs or ())
+                    removed = prev_obs - obs_set
+                    if not removed:
+                        planner = prev
+                        if planner_state.get("start") != start:
+                            planner.update_start(start)
+                        if planner_state.get("goal") != goal:
+                            planner.update_goal(goal)
+                        added = obs_set - prev_obs
+                        if added:
+                            planner.update_obstacles(added)
+                        reusable = True
+
+        if planner is None:
+            planner = DStarLite(
+                start,
+                goal,
+                obs_set,
+                grid_w,
+                grid_h,
+                passable_obs=passable_set,
+                terrain_penalties=terrain_map,
+            )
+
+        if planner_state is not None:
+            planner_state["planner"] = planner
+            planner_state["grid_w"] = grid_w
+            planner_state["grid_h"] = grid_h
+            planner_state["start"] = start
+            planner_state["goal"] = goal
+            planner_state["obs_set"] = obs_set
+            planner_state["passable_obs"] = passable_set
+            planner_state["terrain_penalties"] = terrain_map
+            planner_state["planner_reused"] = reusable
         try:
             path = planner.plan()
         except Exception:

@@ -534,6 +534,7 @@ def _render_planned_frame_from_outputs(
     class_names: dict[int, str],
     grid_scale: int,
     map_only: bool = False,
+    planner_state: dict[str, object] | None = None,
 ) -> tuple[np.ndarray, dict[str, object], dict[str, float]]:
     result = map_from_outputs(
         frame=frame,
@@ -544,6 +545,7 @@ def _render_planned_frame_from_outputs(
         class_names=class_names,
         grid_scale=grid_scale,
         map_only=map_only,
+        planner_state=planner_state,
     )
     return result.planned_frame, result.plan_result, {
         "postprocess_ms": result.postprocess_ms,
@@ -689,6 +691,7 @@ def process_video_capture(
         )
 
     frame_index = 1
+    frame_stem_prefix = f"{source_name}_frame"
     perf_acc = {
         "prep_ms": 0.0,
         "infer_ms": 0.0,
@@ -699,6 +702,7 @@ def process_video_capture(
         "total_ms": 0.0,
     }
     perf_count = 0
+    planner_state: dict[str, object] = {}
     try:
         while True:
             t0 = time.perf_counter()
@@ -710,7 +714,7 @@ def process_video_capture(
             outputs = segmenter._run_inference(input_tensor)
             infer_ms = (time.perf_counter() - t_inf0) * 1000.0
             t_post0 = time.perf_counter()
-            frame_stem = get_frame_stem(Path(f"{source_name}.mp4"), frame_index)
+            frame_stem = f"{frame_stem_prefix}{frame_index:06d}"
             planned, plan_result, post_breakdown = _render_planned_frame_from_outputs(
                 frame,
                 frame_stem,
@@ -720,6 +724,7 @@ def process_video_capture(
                 class_names,
                 grid_scale,
                 map_only,
+                planner_state,
             )
             post_ms = (time.perf_counter() - t_post0) * 1000.0
             total_ms = (time.perf_counter() - t0) * 1000.0
@@ -845,6 +850,7 @@ def process_stream_source(
     display_queue: "queue.Queue[tuple[np.ndarray, np.ndarray, dict[str, object], dict[str, float]]]" = queue.Queue(maxsize=1)
     planner_every_n = max(1, int(os.getenv("YOSEGMAP_PLAN_EVERY_N_FRAMES", "2")))
     planner_period = 1.0 / max(float(planner_rate), 0.1)
+    frame_stem_prefix = f"{source_name}_frame"
 
     def _preprocess_worker() -> None:
         local_index = 1
@@ -853,7 +859,7 @@ def process_stream_source(
             if not ok_local or frame_local is None:
                 time.sleep(0.001)
                 continue
-            frame_stem_local = get_frame_stem(Path(f"{source_name}.mp4"), local_index)
+            frame_stem_local = f"{frame_stem_prefix}{local_index:06d}"
             t_pre0 = time.perf_counter()
             input_tensor_local, ratio_pad_local = segmenter.preprocess_frame(frame_local)
             input_tensor_local = np.ascontiguousarray(input_tensor_local)
@@ -870,6 +876,7 @@ def process_stream_source(
 
     def _postprocess_worker() -> None:
         last_plan_ts = 0.0
+        planner_state_local: dict[str, object] = {}
         while not stop_event.is_set():
             try:
                 frame_local, frame_stem_local, outputs_local, ratio_pad_local, stamp_ns_local, frame_idx_local, perf_local = post_queue.get(timeout=0.05)
@@ -891,6 +898,7 @@ def process_stream_source(
                 class_names,
                 grid_scale,
                 (not do_plan),
+                planner_state_local,
             )
             perf_local["post_ms"] = (time.perf_counter() - t_post0) * 1000.0
             perf_local["postprocess_ms"] = post_breakdown["postprocess_ms"]

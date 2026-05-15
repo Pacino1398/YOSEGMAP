@@ -1,61 +1,84 @@
 RK3588 运行命令（可直接执行）
 
 
-1) 建图优先（推荐，实时更新）
-YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
-  --source 0 \
-  --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
-  --data ./data/my.yaml \
-  --display none \
-  --ros-publish-2p5d \
-  --ros-lite-mode \
-  --map-only \
-  --ros-rate 10 \
-  --ros-occ-topic /octomap/occupancy \
-  --z-max-cap 12.0 \
+1) 建图优先（推荐，实时更新，PowerShell）
+$env:YOSEGMAP_PLAN_EVERY_N_FRAMES = "2"
+python app/planning/realtime_planner.py `
+  --source 0 `
+  --weights .\weights\0414_qy++.rknn `
+  --backend rknn `
+  --data .\data\my.yaml `
+  --display none `
+  --ros-publish-2p5d `
+  --ros-lite-mode `
+  --map-only `
+  --ros-rate 10 `
+  --ros-occ-topic /octomap/occupancy `
+  --z-max-cap 12.0 `
   --perf-log
 
-2) 低频规划（解耦模式）
-YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
-  --source 0 \
-  --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
-  --data ./data/my.yaml \
-  --display none \
-  --ros-publish-2p5d \
-  --ros-lite-mode \
-  --planner-rate 1.0 \
-  --ros-rate 10 \
-  --ros-occ-topic /octomap/occupancy \
-  --z-max-cap 12.0 \
+2) 低频规划（解耦模式，PowerShell）
+$env:YOSEGMAP_PLAN_EVERY_N_FRAMES = "2"
+python app/planning/realtime_planner.py `
+  --source 0 `
+  --weights .\weights\0414_qy++.rknn `
+  --backend rknn `
+  --data .\data\my.yaml `
+  --display none `
+  --ros-publish-2p5d `
+  --ros-lite-mode `
+  --planner-rate 1.0 `
+  --ros-rate 10 `
+  --ros-occ-topic /octomap/occupancy `
+  --z-max-cap 12.0 `
   --perf-log
 
-3) 3D 可视化（Map + MarkerArray）
-YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
-  --source 0 \
-  --weights ./weights/0414_qy++.rknn \
-  --backend rknn \
-  --data ./data/my.yaml \
-  --display none \
-  --ros-publish-2p5d \
-  --ros-rate 10 \
-  --ros-occ-topic /octomap/occupancy \
-  --ros-marker-topic /octomap/markers \
-  --cloud-mode edge \
-  --edge-mode 4n \
-  --z-style top \
-  --z-max-cap 12.0 \
-  --ros-marker-div 3 \
+3) 3D 可视化（Map + MarkerArray，PowerShell）
+$env:YOSEGMAP_PLAN_EVERY_N_FRAMES = "2"
+python app/planning/realtime_planner.py `
+  --source 0 `
+  --weights .\weights\0414_qy++.rknn `
+  --backend rknn `
+  --data .\data\my.yaml `
+  --display none `
+  --ros-publish-2p5d `
+  --ros-rate 10 `
+  --ros-occ-topic /octomap/occupancy `
+  --ros-marker-topic /octomap/markers `
+  --cloud-mode edge `
+  --edge-mode 4n `
+  --z-style top `
+  --z-max-cap 12.0 `
+  --ros-marker-div 3 `
   --perf-log
 
-4) 话题检查
+4) 本地视频评估（01.mp4）
+$env:YOSEGMAP_PLAN_EVERY_N_FRAMES = "2"
+python app/planning/realtime_planner.py `
+  --source .\01.mp4 `
+  --weights .\weights\0414_qy++.rknn `
+  --backend rknn `
+  --data .\data\my.yaml `
+  --display none `
+  --ros-publish-2p5d `
+  --ros-lite-mode `
+  --map-only `
+  --ros-rate 10 `
+  --ros-occ-topic /octomap/occupancy `
+  --z-max-cap 12.0 `
+  --perf-log
+
+5) 话题检查
 ros2 topic list | grep octomap
 ros2 topic hz /octomap/occupancy
 ros2 topic hz /octomap/markers
 
-5) 新图变化频率（不是发布频率）
+6) 新图变化频率（不是发布频率）
 python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0
 
-6) perf 日志字段说明（每 10 帧均值）
+7) perf 日志字段说明（每 10 帧均值）
 [perf] prep=... infer=... post=... postprocess=... planning=... render=... total=... (n=10)
+
+8) 优化后观察重点
+- planning 是否明显下降（堆化 + planner_state 复用生效）
+- post 是否随之下降（减少重复对象构建与集合转换）

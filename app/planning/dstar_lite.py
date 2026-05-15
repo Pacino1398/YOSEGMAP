@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 import math
 
 __all__ = ["DStarLite"]
@@ -31,6 +32,7 @@ class DStarLite:
         self.g = {}
         self.rhs = {}
         self.U = {}
+        self._open_heap = []
         self.km = 0
         self.motions = [
             (-1, 0),
@@ -52,7 +54,21 @@ class DStarLite:
             self._apply_inflation(obstacle)
 
         self.rhs[goal] = 0.0
-        self.U[goal] = self.calc_key(goal)
+        self._set_open(goal, self.calc_key(goal))
+
+    def _set_open(self, node, key):
+        self.U[node] = key
+        heapq.heappush(self._open_heap, (key[0], key[1], node))
+
+    def _pop_open(self):
+        while self._open_heap:
+            k1, k2, node = heapq.heappop(self._open_heap)
+            key = self.U.get(node)
+            if key is None:
+                continue
+            if key[0] == k1 and key[1] == k2:
+                return node, key
+        return None, None
 
     def _apply_inflation(self, obs_node):
         ox, oy = obs_node
@@ -109,14 +125,15 @@ class DStarLite:
         if u in self.U:
             del self.U[u]
         if self.g[u] != self.rhs[u]:
-            self.U[u] = self.calc_key(u)
+            self._set_open(u, self.calc_key(u))
 
     def compute_path(self):
         while True:
             if not self.U:
                 break
-            s = min(self.U, key=self.U.get)
-            k_old = self.U[s]
+            s, k_old = self._pop_open()
+            if s is None:
+                break
             k_new = self.calc_key(s)
 
             if k_old >= k_new and self.rhs[s] == self.g[s]:
@@ -125,7 +142,7 @@ class DStarLite:
             del self.U[s]
 
             if k_old < k_new:
-                self.U[s] = k_new
+                self._set_open(s, k_new)
             elif self.g[s] > self.rhs[s]:
                 self.g[s] = self.rhs[s]
                 for neighbor in self.neighbors(s):
