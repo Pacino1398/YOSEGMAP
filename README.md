@@ -125,25 +125,6 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
   --cloud-mode edge
 ```
 
-PowerShell 写法（Windows）：
-
-```powershell
-$env:YOSEGMAP_PLAN_EVERY_N_FRAMES = "2"
-python app/planning/realtime_planner.py `
-  --source 0 `
-  --weights .\weights\0414_qy++.rknn `
-  --backend rknn `
-  --data .\data\my.yaml `
-  --display none `
-  --ros-publish-2p5d `
-  --ros-lite-mode `
-  --ros-rate 6 `
-  --ros-occ-topic /octomap/occupancy `
-  --z-max-cap 12.0 `
-  --z-step 0.8 `
-  --cloud-mode edge
-```
-
 若发布仍低于 6Hz，可降载：
 
 ```bash
