@@ -59,10 +59,3 @@ python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0
 
 6) perf 日志字段说明（每 10 帧均值）
 [perf] prep=... infer=... post=... postprocess=... planning=... render=... total=... (n=10)
-
-7) 另开终端单独查看 perf（主程序正常跑）
-终端1（正常运行并写入日志）
-python app/planning/realtime_planner.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --display none --ros-publish-2p5d --ros-lite-mode --map-only --ros-rate 10 --ros-occ-topic /octomap/occupancy --z-max-cap 12.0 --perf-log 2>&1 | Tee-Object -FilePath .\runtime.log
-
-终端2（仅实时打印 perf 行）
-Get-Content .\runtime.log -Wait | Select-String "\[perf\]"
