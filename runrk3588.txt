@@ -3,7 +3,7 @@ RK3588 运行命令（可直接执行）
 
 1) 建图优先（推荐，实时更新）
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
-  --source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4 \
+  --source 0 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
   --data ./data/my.yaml \
@@ -18,7 +18,7 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
 
 2) 低频规划（解耦模式）
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
-  --source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4 \
+  --source 0 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
   --data ./data/my.yaml \
@@ -33,7 +33,7 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
 
 3) 3D 可视化（Map + MarkerArray）
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_planner.py \
-  --source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4 \
+  --source 0 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
   --data ./data/my.yaml \
