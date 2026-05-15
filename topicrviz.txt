@@ -1,80 +1,51 @@
-话题（统一订阅）
-  - `/octomap/occupancy` (`nav_msgs/OccupancyGrid`)
+最小命令清单（RViz2 验证）
 
-场景A：实时分割 + 2.5D 发布 + 本机可视化
-终端1（发布端）
-YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
-  --source 0 \
+1) 启动发布（3D：Map + MarkerArray）
+python app/planning/realtime_pathplan.py \
+  --source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
   --data ./data/my.yaml \
   --display none \
-  --imgsz 640 \
   --ros-publish-2p5d \
-  --ros-lite-mode \
-  --ros-frame-id map \
-  --ros-rate 6 \
+  --ros-rate 10 \
   --ros-occ-topic /octomap/occupancy \
-  --z-step 0.8 \
+  --ros-marker-topic /octomap/markers \
+  --cloud-mode edge \
+  --edge-mode 4n \
+  --z-style top \
   --z-max-cap 12.0 \
-  --cloud-mode edge
+  --ros-marker-div 3 \
+  --perf-log
 
-终端2（订阅检查）
-ros2 topic list | grep octomap
-ros2 topic echo /octomap/occupancy --once
-ros2 topic hz /octomap/occupancy
-python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0
-
-测试口径说明（建议按此流程判断瓶颈）
-1) 发布频率（含重复旧图）
-   命令：`ros2 topic hz /octomap/occupancy`
-   含义：异步发布线程输出频率，可能高于真实新图频率。
-
-2) 新图变化频率（内容变化）
-   命令：`python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0`
-   关注：`newmap_hz`
-   含义：仅当 `OccupancyGrid.data` 发生变化才计数，受场景动态影响很大。
-   结论：`newmap_hz` 低不一定是算力不足，也可能是地图内容本身变化慢。
-
-3) 参数回归检查（避免误判）
-   - 将 `YOSEGMAP_PLAN_EVERY_N_FRAMES` 设为 `1/2/3` 对比；
-   - 若 `publish_hz` 变化明显而 `newmap_hz` 基本不变，说明受“内容变化率”限制更大；
-   - 若两者都明显下降，说明计算链路存在性能瓶颈。
-
-4) 路径规范
-   - `--source` 请使用相对路径或变量路径，不要写死机器相关的绝对路径。
-   - 示例：`--source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4`
-
-终端3（RViz2）
-rviz2
-
-场景B：保留可视化（仍发布并可订阅）
-终端1（发布端）
+2) 轻量模式（仅 OccupancyGrid）
 python app/planning/realtime_pathplan.py \
-  --source 0 \
+  --source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
   --data ./data/my.yaml \
-  --display local \
-  --cloud-mode edge \
-  --imgsz 640 \
-  --gray-view \
+  --display none \
   --ros-publish-2p5d \
   --ros-lite-mode \
-  --z-step 0.8
+  --ros-rate 10 \
+  --ros-occ-topic /octomap/occupancy \
+  --z-max-cap 12.0 \
+  --perf-log
 
-终端2（订阅检查）
+3) 订阅检查
 ros2 topic list | grep octomap
-ros2 topic echo /octomap/occupancy --once
 ros2 topic hz /octomap/occupancy
+ros2 topic hz /octomap/markers
 
-说明
-- 所有运行命令均已包含 `--ros-publish-2p5d`，都可被订阅。
-- 高度语义通过 `OccupancyGrid` 数值编码（1~100）体现，默认不再依赖 `PointCloud2`。
-- 若无桌面环境，可把 `--display local` 改为 `--display none`，订阅流程不变。
-- 2026-05-14 起 realtime 主链路为异步流水线，发布频率可能较旧版本更稳定；话题名与消息类型不变。
-- 若发布频率仍不足，可设置 `YOSEGMAP_PLAN_EVERY_N_FRAMES=2` 降低规划/点云计算频率，优先保证实时更新稳定性。
-- 建议用 `tools/measure_newmap_rate.py` 区分“发布频率（publish_hz）”与“新图频率（newmap_hz）”。
-- 需要单帧阶段耗时时，可在发布端追加 `--perf-log`，查看 `[perf] prep/infer/post/total`。
+4) 新图变化频率
+python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0
 
+5) RViz2 设置
+- Fixed Frame: map
+- Add -> Map, topic: /octomap/occupancy
+- Add -> MarkerArray, topic: /octomap/markers
+
+6) perf 日志说明
+- `--perf-log` 输出格式：
+  [perf] prep=xx.xxms infer=xx.xxms post=xx.xxms total=xx.xxms (n=10)
 

@@ -179,6 +179,7 @@ python tools/ros2_map_viewer.py \
 python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --display none --perf-log
 
 输出示例：
-[perf] prep=xx.xxms infer=xx.xxms post=xx.xxms total=xx.xxms (n=30)
-说明：每 30 帧输出一次均值，分别对应预处理/推理/后处理+规划/总耗时。
+[perf] prep=xx.xxms infer=xx.xxms post=xx.xxms total=xx.xxms (n=10)
+说明：每 10 帧输出一次均值，分别对应预处理/推理/后处理+规划/总耗时。
+
 

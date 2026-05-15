@@ -669,6 +669,7 @@ def process_video_capture(
     ros2_publisher: RealtimeRos2MapPublisher | None = None,
     gray_view: bool = False,
     fps: float | None = None,
+    perf_log: bool = False,
 ) -> Path | None:
     ok, frame = capture.read()
     if not ok or frame is None:
@@ -690,10 +691,48 @@ def process_video_capture(
         )
 
     frame_index = 1
+    perf_acc = {"prep_ms": 0.0, "infer_ms": 0.0, "post_ms": 0.0, "total_ms": 0.0}
+    perf_count = 0
     try:
         while True:
+            t0 = time.perf_counter()
+            t_pre0 = time.perf_counter()
+            input_tensor, ratio_pad = segmenter.preprocess_frame(frame)
+            input_tensor = np.ascontiguousarray(input_tensor)
+            prep_ms = (time.perf_counter() - t_pre0) * 1000.0
+            t_inf0 = time.perf_counter()
+            outputs = segmenter._run_inference(input_tensor)
+            infer_ms = (time.perf_counter() - t_inf0) * 1000.0
+            t_post0 = time.perf_counter()
             frame_stem = get_frame_stem(Path(f"{source_name}.mp4"), frame_index)
-            planned, plan_result = render_planned_frame(frame, segmenter, class_names, grid_scale, frame_stem)
+            planned, plan_result = _render_planned_frame_from_outputs(
+                frame,
+                frame_stem,
+                outputs,
+                ratio_pad,
+                segmenter,
+                class_names,
+                grid_scale,
+            )
+            post_ms = (time.perf_counter() - t_post0) * 1000.0
+            total_ms = (time.perf_counter() - t0) * 1000.0
+            if perf_log:
+                perf_acc["prep_ms"] += prep_ms
+                perf_acc["infer_ms"] += infer_ms
+                perf_acc["post_ms"] += post_ms
+                perf_acc["total_ms"] += total_ms
+                perf_count += 1
+                if perf_count >= 10:
+                    print(
+                        f"[perf] prep={perf_acc['prep_ms']/perf_count:.2f}ms "
+                        f"infer={perf_acc['infer_ms']/perf_count:.2f}ms "
+                        f"post={perf_acc['post_ms']/perf_count:.2f}ms "
+                        f"total={perf_acc['total_ms']/perf_count:.2f}ms "
+                        f"(n={perf_count})"
+                    )
+                    for k in perf_acc:
+                        perf_acc[k] = 0.0
+                    perf_count = 0
             if ros2_publisher is not None:
                 ros2_publisher.publish(plan_result["grid_handler"])
             display_frame = to_gray_view_frame(planned, gray_view)
@@ -726,6 +765,7 @@ def process_video_source(
     remote_server: MjpegStreamServer | None,
     ros2_publisher: RealtimeRos2MapPublisher | None = None,
     gray_view: bool = False,
+    perf_log: bool = False,
 ) -> Path | None:
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
@@ -744,6 +784,8 @@ def process_video_source(
             remote_server,
             ros2_publisher,
             gray_view,
+            None,
+            perf_log,
         )
     finally:
         capture.release()
@@ -872,7 +914,7 @@ def process_stream_source(
                     for k in perf_acc:
                         perf_acc[k] += perf_done.get(k, 0.0)
                     perf_count += 1
-                    if perf_count >= 30:
+                    if perf_count >= 10:
                         print(
                             f"[perf] prep={perf_acc['prep_ms']/perf_count:.2f}ms "
                             f"infer={perf_acc['infer_ms']/perf_count:.2f}ms "
@@ -1040,6 +1082,7 @@ def run_realtime_pathplan(
                             remote_server,
                             ros2_publisher,
                             gray_view,
+                            perf_log,
                         )
                     else:
                         continue
@@ -1075,6 +1118,7 @@ def run_realtime_pathplan(
                 remote_server,
                 ros2_publisher,
                 gray_view,
+                perf_log,
             )
             if output_path is not None:
                 print(f"已保存规划结果: {output_path}")
@@ -1143,7 +1187,7 @@ def parse_args():
     parser.add_argument("--z-style", choices=("top", "band"), default="top", help="高度发布方式：仅顶面或整段")
     parser.add_argument("--ros-marker-div", type=int, default=3, help="MarkerArray 分频发布：每 N 帧发布一次（>=1）")
     parser.add_argument("--gray-view", action="store_true", help="本机显示与远端预览使用灰度图，减轻可视化负载")
-    parser.add_argument("--perf-log", action="store_true", help="打印单帧阶段耗时统计（每30帧）")
+    parser.add_argument("--perf-log", action="store_true", help="打印单帧阶段耗时统计（每10帧）")
     parser.add_argument("--nosave", action="store_true", help="只显示不保存输出（默认已不保存）")
     parser.add_argument("--dnn", action="store_true", help="使用 OpenCV DNN 加载 ONNX")
     parser.add_argument("--half", action="store_true", help="启用 FP16")
