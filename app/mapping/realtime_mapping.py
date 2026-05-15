@@ -380,7 +380,7 @@ def map_from_outputs(
     grid_w = max(1, frame_w // grid_scale)
     grid_h = max(1, frame_h // grid_scale)
     grid_handler = GridMapHandler(grid_w=grid_w, grid_h=grid_h, grid_scale=grid_scale)
-    _, target_point = grid_handler.batch_masks_to_obs(mask_entries)
+    obs, target_point = grid_handler.batch_masks_to_obs(mask_entries)
     start = (grid_w // 2, grid_h // 2)
     goal = target_point if target_point is not None else (max(0, grid_w - 5), max(0, grid_h - 5))
     path: list[tuple[int, int]] = []
@@ -388,15 +388,18 @@ def map_from_outputs(
         from app.planning.dstar_lite import DStarLite
 
         planner = DStarLite(
-            grid=grid_handler.grid,
-            dynamic_obstacles=grid_handler.traversable_obstacles,
-            obstacle_height_map=grid_handler.obstacle_heights,
-            display_obs=grid_handler.display_obs,
-            start=start,
-            goal=goal,
-            z_mode="top",
+            start,
+            goal,
+            obs,
+            grid_w,
+            grid_h,
+            passable_obs=grid_handler.traversable_obstacles,
+            terrain_penalties=grid_handler.terrain_penalties,
         )
-        path = planner.move_and_replan(start)
+        try:
+            path = planner.plan()
+        except Exception:
+            path = []
     plan_result = {
         "grid_handler": grid_handler,
         "path": path,
