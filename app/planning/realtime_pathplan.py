@@ -525,8 +525,9 @@ def _render_planned_frame_from_outputs(
     segmenter,
     class_names: dict[int, str],
     grid_scale: int,
-) -> tuple[np.ndarray, dict[str, object]]:
+) -> tuple[np.ndarray, dict[str, object], dict[str, float]]:
     backend_name = "RKNN" if isinstance(segmenter, RknnRealtimeSegmenter) else "ONNX"
+    t_post0 = time.perf_counter()
     prediction, proto = extract_prediction_and_proto(outputs, backend_name)
     detections, masks = postprocess_segmentation_outputs(
         prediction,
@@ -540,8 +541,12 @@ def _render_planned_frame_from_outputs(
         segmenter.classes,
         segmenter.agnostic_nms,
     )
+    postprocess_ms = (time.perf_counter() - t_post0) * 1000.0
+    t_plan0 = time.perf_counter()
     mask_entries = detections_to_mask_entries(detections, masks, frame_stem)
     plan_result = build_plan_result(frame.shape[:2], mask_entries, grid_scale)
+    planning_ms = (time.perf_counter() - t_plan0) * 1000.0
+    t_render0 = time.perf_counter()
     rendered = render_plan_on_frame(
         frame,
         plan_result["grid_handler"],
@@ -552,7 +557,12 @@ def _render_planned_frame_from_outputs(
         class_names=class_names,
         show_labels=True,
     )
-    return np.ascontiguousarray(rendered), plan_result
+    render_ms = (time.perf_counter() - t_render0) * 1000.0
+    return np.ascontiguousarray(rendered), plan_result, {
+        "postprocess_ms": postprocess_ms,
+        "planning_ms": planning_ms,
+        "render_ms": render_ms,
+    }
 
 
 def maybe_show_frame(frame: np.ndarray, enabled: bool, imshow_state: dict[str, bool] | None = None) -> bool:
@@ -691,7 +701,15 @@ def process_video_capture(
         )
 
     frame_index = 1
-    perf_acc = {"prep_ms": 0.0, "infer_ms": 0.0, "post_ms": 0.0, "total_ms": 0.0}
+    perf_acc = {
+        "prep_ms": 0.0,
+        "infer_ms": 0.0,
+        "post_ms": 0.0,
+        "postprocess_ms": 0.0,
+        "planning_ms": 0.0,
+        "render_ms": 0.0,
+        "total_ms": 0.0,
+    }
     perf_count = 0
     try:
         while True:
@@ -705,7 +723,7 @@ def process_video_capture(
             infer_ms = (time.perf_counter() - t_inf0) * 1000.0
             t_post0 = time.perf_counter()
             frame_stem = get_frame_stem(Path(f"{source_name}.mp4"), frame_index)
-            planned, plan_result = _render_planned_frame_from_outputs(
+            planned, plan_result, post_breakdown = _render_planned_frame_from_outputs(
                 frame,
                 frame_stem,
                 outputs,
@@ -720,6 +738,9 @@ def process_video_capture(
                 perf_acc["prep_ms"] += prep_ms
                 perf_acc["infer_ms"] += infer_ms
                 perf_acc["post_ms"] += post_ms
+                perf_acc["postprocess_ms"] += post_breakdown["postprocess_ms"]
+                perf_acc["planning_ms"] += post_breakdown["planning_ms"]
+                perf_acc["render_ms"] += post_breakdown["render_ms"]
                 perf_acc["total_ms"] += total_ms
                 perf_count += 1
                 if perf_count >= 10:
@@ -727,6 +748,9 @@ def process_video_capture(
                         f"[perf] prep={perf_acc['prep_ms']/perf_count:.2f}ms "
                         f"infer={perf_acc['infer_ms']/perf_count:.2f}ms "
                         f"post={perf_acc['post_ms']/perf_count:.2f}ms "
+                        f"postprocess={perf_acc['postprocess_ms']/perf_count:.2f}ms "
+                        f"planning={perf_acc['planning_ms']/perf_count:.2f}ms "
+                        f"render={perf_acc['render_ms']/perf_count:.2f}ms "
                         f"total={perf_acc['total_ms']/perf_count:.2f}ms "
                         f"(n={perf_count})"
                     )
@@ -826,7 +850,7 @@ def process_stream_source(
     prep_queue: "queue.Queue[tuple[np.ndarray, str, np.ndarray, tuple[tuple[float, float], tuple[float, float]], int, int, dict[str, float]]]" = queue.Queue(maxsize=2)
     post_queue: "queue.Queue[tuple[np.ndarray, str, list[np.ndarray], tuple[tuple[float, float], tuple[float, float]], int, int, dict[str, float]]]" = queue.Queue(maxsize=2)
     display_queue: "queue.Queue[tuple[np.ndarray, np.ndarray, dict[str, object], dict[str, float]]]" = queue.Queue(maxsize=1)
-    planner_every_n = max(1, int(os.getenv("YOSEGMAP_PLAN_EVERY_N_FRAMES", "1")))
+    planner_every_n = max(1, int(os.getenv("YOSEGMAP_PLAN_EVERY_N_FRAMES", "2")))
 
     def _preprocess_worker() -> None:
         local_index = 1
@@ -859,7 +883,7 @@ def process_stream_source(
             if frame_idx_local % planner_every_n != 0:
                 continue
             t_post0 = time.perf_counter()
-            planned_local, plan_result_local = _render_planned_frame_from_outputs(
+            planned_local, plan_result_local, post_breakdown = _render_planned_frame_from_outputs(
                 frame_local,
                 frame_stem_local,
                 outputs_local,
@@ -869,6 +893,9 @@ def process_stream_source(
                 grid_scale,
             )
             perf_local["post_ms"] = (time.perf_counter() - t_post0) * 1000.0
+            perf_local["postprocess_ms"] = post_breakdown["postprocess_ms"]
+            perf_local["planning_ms"] = post_breakdown["planning_ms"]
+            perf_local["render_ms"] = post_breakdown["render_ms"]
             perf_local["total_ms"] = perf_local["prep_ms"] + perf_local["infer_ms"] + perf_local["post_ms"]
             if ros2_publisher is not None:
                 ros2_publisher.update_data(plan_result_local["grid_handler"], stamp_ns_local, frame_idx_local)
@@ -886,7 +913,15 @@ def process_stream_source(
     postprocess_thread.start()
 
     try:
-        perf_acc = {"prep_ms": 0.0, "infer_ms": 0.0, "post_ms": 0.0, "total_ms": 0.0}
+        perf_acc = {
+            "prep_ms": 0.0,
+            "infer_ms": 0.0,
+            "post_ms": 0.0,
+            "postprocess_ms": 0.0,
+            "planning_ms": 0.0,
+            "render_ms": 0.0,
+            "total_ms": 0.0,
+        }
         perf_count = 0
         while True:
             try:
@@ -919,6 +954,9 @@ def process_stream_source(
                             f"[perf] prep={perf_acc['prep_ms']/perf_count:.2f}ms "
                             f"infer={perf_acc['infer_ms']/perf_count:.2f}ms "
                             f"post={perf_acc['post_ms']/perf_count:.2f}ms "
+                            f"postprocess={perf_acc['postprocess_ms']/perf_count:.2f}ms "
+                            f"planning={perf_acc['planning_ms']/perf_count:.2f}ms "
+                            f"render={perf_acc['render_ms']/perf_count:.2f}ms "
                             f"total={perf_acc['total_ms']/perf_count:.2f}ms "
                             f"(n={perf_count})"
                         )

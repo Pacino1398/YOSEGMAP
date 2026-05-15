@@ -89,7 +89,7 @@ python app/planning/realtime_pathplan.py \
 [C] 实时发布 ROS2 2.5D 地图（ 见 topicrviz.txt）
 1) 发布（在 realtime 主链路中直接发布）
 推荐（高度语义栅格，实时更新优先，目标 >=6Hz）:
-YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
+YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_pathplan.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
@@ -135,7 +135,7 @@ python app/planning/realtime_pathplan.py \
   --xy-samples 1
 
 3D 效果模式（Map + MarkerArray）:
-YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
+YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_pathplan.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
@@ -179,7 +179,9 @@ python tools/ros2_map_viewer.py \
 python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --display none --perf-log
 
 输出示例：
-[perf] prep=xx.xxms infer=xx.xxms post=xx.xxms total=xx.xxms (n=10)
-说明：每 10 帧输出一次均值，分别对应预处理/推理/后处理+规划/总耗时。
+[perf] prep=xx.xxms infer=xx.xxms post=xx.xxms postprocess=xx.xxms planning=xx.xxms render=xx.xxms total=xx.xxms (n=10)
+说明：每 10 帧输出一次均值，分别对应预处理/推理/后处理总耗时，以及后处理细分的 postprocess/planning/render。
+
+
 
 

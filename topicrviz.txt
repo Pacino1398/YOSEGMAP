@@ -47,5 +47,6 @@ python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0
 
 6) perf 日志说明
 - `--perf-log` 输出格式：
-  [perf] prep=xx.xxms infer=xx.xxms post=xx.xxms total=xx.xxms (n=10)
+  [perf] prep=xx.xxms infer=xx.xxms post=xx.xxms postprocess=xx.xxms planning=xx.xxms render=xx.xxms total=xx.xxms (n=10)
+
 

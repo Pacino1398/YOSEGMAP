@@ -101,7 +101,7 @@ python app/planning/realtime_pathplan.py \
 RK3588（推荐实时发布配置，目标 >=6Hz）：
 
 ```bash
-YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
+YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_pathplan.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
@@ -120,6 +120,18 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=1 python app/planning/realtime_pathplan.py \
 
 ```bash
 YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_pathplan.py ...
+```
+
+性能日志（每 10 帧统计）：
+
+```bash
+python app/planning/realtime_pathplan.py ... --perf-log
+```
+
+输出示例：
+
+```text
+[perf] prep=xx.xxms infer=xx.xxms post=xx.xxms postprocess=xx.xxms planning=xx.xxms render=xx.xxms total=xx.xxms (n=10)
 ```
 
 远端预览（MJPEG）：
@@ -167,4 +179,5 @@ python tools/export_rknn.py --onnx ./weights/0414_qy++.onnx --output ./weights/0
 - 导出 `.rknn`：安装 `rknn-toolkit2`
 - RK3588 建议：发布侧尽量与推理侧隔离（例如 `taskset` 绑核），并优先使用 `--cloud-mode edge --z-step 0.8`
 - RViz2 建议：添加 `Map` 插件并订阅 `/octomap/occupancy`，按 costmap 语义观察高度分层（1~100）
+
 
