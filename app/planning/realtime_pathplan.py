@@ -760,6 +760,7 @@ def process_stream_source(
     remote_server: MjpegStreamServer | None,
     ros2_publisher: RealtimeRos2MapPublisher | None = None,
     gray_view: bool = False,
+    perf_log: bool = False,
 ) -> Path | None:
     capture_target: int | str = int(stream_source) if stream_source.isdigit() else stream_source
     capture: cv2.VideoCapture
@@ -780,9 +781,9 @@ def process_stream_source(
     frame_index = 1
     grabber = _LatestFrameGrabber(capture).start()
     stop_event = threading.Event()
-    prep_queue: "queue.Queue[tuple[np.ndarray, str, np.ndarray, tuple[tuple[float, float], tuple[float, float]], int, int]]" = queue.Queue(maxsize=2)
-    post_queue: "queue.Queue[tuple[np.ndarray, str, list[np.ndarray], tuple[tuple[float, float], tuple[float, float]], int, int]]" = queue.Queue(maxsize=2)
-    display_queue: "queue.Queue[tuple[np.ndarray, np.ndarray, dict[str, object]]]" = queue.Queue(maxsize=1)
+    prep_queue: "queue.Queue[tuple[np.ndarray, str, np.ndarray, tuple[tuple[float, float], tuple[float, float]], int, int, dict[str, float]]]" = queue.Queue(maxsize=2)
+    post_queue: "queue.Queue[tuple[np.ndarray, str, list[np.ndarray], tuple[tuple[float, float], tuple[float, float]], int, int, dict[str, float]]]" = queue.Queue(maxsize=2)
+    display_queue: "queue.Queue[tuple[np.ndarray, np.ndarray, dict[str, object], dict[str, float]]]" = queue.Queue(maxsize=1)
     planner_every_n = max(1, int(os.getenv("YOSEGMAP_PLAN_EVERY_N_FRAMES", "1")))
 
     def _preprocess_worker() -> None:
@@ -793,9 +794,12 @@ def process_stream_source(
                 time.sleep(0.001)
                 continue
             frame_stem_local = get_frame_stem(Path(f"{source_name}.mp4"), local_index)
+            t_pre0 = time.perf_counter()
             input_tensor_local, ratio_pad_local = segmenter.preprocess_frame(frame_local)
             input_tensor_local = np.ascontiguousarray(input_tensor_local)
-            item = (frame_local, frame_stem_local, input_tensor_local, ratio_pad_local, stamp_ns_local, local_index)
+            prep_ms = (time.perf_counter() - t_pre0) * 1000.0
+            perf_local = {"prep_ms": prep_ms, "infer_ms": 0.0, "post_ms": 0.0, "total_ms": 0.0}
+            item = (frame_local, frame_stem_local, input_tensor_local, ratio_pad_local, stamp_ns_local, local_index, perf_local)
             if prep_queue.full():
                 try:
                     prep_queue.get_nowait()
@@ -807,11 +811,12 @@ def process_stream_source(
     def _postprocess_worker() -> None:
         while not stop_event.is_set():
             try:
-                frame_local, frame_stem_local, outputs_local, ratio_pad_local, stamp_ns_local, frame_idx_local = post_queue.get(timeout=0.05)
+                frame_local, frame_stem_local, outputs_local, ratio_pad_local, stamp_ns_local, frame_idx_local, perf_local = post_queue.get(timeout=0.05)
             except queue.Empty:
                 continue
             if frame_idx_local % planner_every_n != 0:
                 continue
+            t_post0 = time.perf_counter()
             planned_local, plan_result_local = _render_planned_frame_from_outputs(
                 frame_local,
                 frame_stem_local,
@@ -821,6 +826,8 @@ def process_stream_source(
                 class_names,
                 grid_scale,
             )
+            perf_local["post_ms"] = (time.perf_counter() - t_post0) * 1000.0
+            perf_local["total_ms"] = perf_local["prep_ms"] + perf_local["infer_ms"] + perf_local["post_ms"]
             if ros2_publisher is not None:
                 ros2_publisher.update_data(plan_result_local["grid_handler"], stamp_ns_local, frame_idx_local)
             display_frame_local = to_gray_view_frame(planned_local, gray_view)
@@ -829,7 +836,7 @@ def process_stream_source(
                     display_queue.get_nowait()
                 except queue.Empty:
                     pass
-            display_queue.put_nowait((planned_local, display_frame_local, plan_result_local))
+            display_queue.put_nowait((planned_local, display_frame_local, plan_result_local, perf_local))
 
     preprocess_thread = threading.Thread(target=_preprocess_worker, daemon=True)
     postprocess_thread = threading.Thread(target=_postprocess_worker, daemon=True)
@@ -837,26 +844,45 @@ def process_stream_source(
     postprocess_thread.start()
 
     try:
+        perf_acc = {"prep_ms": 0.0, "infer_ms": 0.0, "post_ms": 0.0, "total_ms": 0.0}
+        perf_count = 0
         while True:
             try:
-                frame, frame_stem, input_tensor, ratio_pad, stamp_ns, frame_idx = prep_queue.get(timeout=0.05)
+                frame, frame_stem, input_tensor, ratio_pad, stamp_ns, frame_idx, perf = prep_queue.get(timeout=0.05)
             except queue.Empty:
                 continue
 
+            t_inf0 = time.perf_counter()
             outputs = segmenter._run_inference(input_tensor)
+            perf["infer_ms"] = (time.perf_counter() - t_inf0) * 1000.0
 
             if post_queue.full():
                 try:
                     post_queue.get_nowait()
                 except queue.Empty:
                     pass
-            post_queue.put_nowait((frame, frame_stem, outputs, ratio_pad, stamp_ns, frame_idx))
+            post_queue.put_nowait((frame, frame_stem, outputs, ratio_pad, stamp_ns, frame_idx, perf))
 
             while True:
                 try:
-                    planned, display_frame, _ = display_queue.get_nowait()
+                    planned, display_frame, _, perf_done = display_queue.get_nowait()
                 except queue.Empty:
                     break
+                if perf_log:
+                    for k in perf_acc:
+                        perf_acc[k] += perf_done.get(k, 0.0)
+                    perf_count += 1
+                    if perf_count >= 30:
+                        print(
+                            f"[perf] prep={perf_acc['prep_ms']/perf_count:.2f}ms "
+                            f"infer={perf_acc['infer_ms']/perf_count:.2f}ms "
+                            f"post={perf_acc['post_ms']/perf_count:.2f}ms "
+                            f"total={perf_acc['total_ms']/perf_count:.2f}ms "
+                            f"(n={perf_count})"
+                        )
+                        for k in perf_acc:
+                            perf_acc[k] = 0.0
+                        perf_count = 0
 
                 if writer is None and run_dir is not None:
                     frame_h, frame_w = planned.shape[:2]
@@ -929,6 +955,7 @@ def run_realtime_pathplan(
     z_style: str = "top",
     ros_marker_div: int = 3,
     gray_view: bool = False,
+    perf_log: bool = False,
 ) -> Path | None:
     source_value = resolve_source(source)
     current_grid_scale = grid_scale if grid_scale is not None else DEFAULT_CONFIG.default_grid_scale
@@ -1064,6 +1091,7 @@ def run_realtime_pathplan(
             remote_server,
             ros2_publisher,
             gray_view,
+            perf_log,
         )
         if output_path is not None:
             print(f"已保存规划结果: {output_path}")
@@ -1115,6 +1143,7 @@ def parse_args():
     parser.add_argument("--z-style", choices=("top", "band"), default="top", help="高度发布方式：仅顶面或整段")
     parser.add_argument("--ros-marker-div", type=int, default=3, help="MarkerArray 分频发布：每 N 帧发布一次（>=1）")
     parser.add_argument("--gray-view", action="store_true", help="本机显示与远端预览使用灰度图，减轻可视化负载")
+    parser.add_argument("--perf-log", action="store_true", help="打印单帧阶段耗时统计（每30帧）")
     parser.add_argument("--nosave", action="store_true", help="只显示不保存输出（默认已不保存）")
     parser.add_argument("--dnn", action="store_true", help="使用 OpenCV DNN 加载 ONNX")
     parser.add_argument("--half", action="store_true", help="启用 FP16")
@@ -1165,6 +1194,7 @@ def main():
         z_style=args.z_style,
         ros_marker_div=args.ros_marker_div,
         gray_view=args.gray_view,
+        perf_log=args.perf_log,
     )
 
 

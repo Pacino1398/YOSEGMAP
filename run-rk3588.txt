@@ -173,3 +173,12 @@ python tools/ros2_map_viewer.py \
 - `--ros-marker-topic`：发布 `MarkerArray` 的话题名（3D 可视化轨）
 - `--z-max-cap`：高度语义映射上限（映射到 100）
 
+
+[E] 单帧耗时日志（perf）
+开启方式：
+python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --display none --perf-log
+
+输出示例：
+[perf] prep=xx.xxms infer=xx.xxms post=xx.xxms total=xx.xxms (n=30)
+说明：每 30 帧输出一次均值，分别对应预处理/推理/后处理+规划/总耗时。
+

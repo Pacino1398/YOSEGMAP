@@ -75,4 +75,6 @@ ros2 topic hz /octomap/occupancy
 - 2026-05-14 起 realtime 主链路为异步流水线，发布频率可能较旧版本更稳定；话题名与消息类型不变。
 - 若发布频率仍不足，可设置 `YOSEGMAP_PLAN_EVERY_N_FRAMES=2` 降低规划/点云计算频率，优先保证实时更新稳定性。
 - 建议用 `tools/measure_newmap_rate.py` 区分“发布频率（publish_hz）”与“新图频率（newmap_hz）”。
+- 需要单帧阶段耗时时，可在发布端追加 `--perf-log`，查看 `[perf] prep/infer/post/total`。
+
 
