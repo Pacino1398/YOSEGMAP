@@ -30,6 +30,10 @@ sudo watch -n1 'echo "=== RKNPU Status ==="; for k in load freq fps; do p=/sys/k
      --backend rknn \
      --data ./data/my.yaml
 
+   说明：
+   - `--source` 建议使用相对路径（相对于工程根目录），不要写死绝对路径。
+   - 示例：`--source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4`
+
 3) 接 USB / MIPI 摄像头实时运行
    有显示环境时：
    python app/planning/realtime_pathplan.py \

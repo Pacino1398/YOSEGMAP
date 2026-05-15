@@ -41,6 +41,10 @@ python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0
    - 若 `publish_hz` 变化明显而 `newmap_hz` 基本不变，说明受“内容变化率”限制更大；
    - 若两者都明显下降，说明计算链路存在性能瓶颈。
 
+4) 路径规范
+   - `--source` 请使用相对路径或变量路径，不要写死机器相关的绝对路径。
+   - 示例：`--source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4`
+
 终端3（RViz2）
 rviz2
 
