@@ -108,15 +108,15 @@ class RknnRealtimeSegmenter:
 
         letterboxed, ratio, pad = _letterbox(frame, self.imgsz)
         image = cv2.cvtColor(letterboxed, cv2.COLOR_BGR2RGB)
-        image = image.transpose((2, 0, 1)).astype(np.float32, copy=False)
+        image = image.astype(np.float32, copy=False)
         input_tensor = np.expand_dims(np.ascontiguousarray(image), axis=0)
         return input_tensor, (ratio, pad)
 
     def _run_inference(self, input_tensor: np.ndarray) -> list[np.ndarray]:
         if self.runtime_backend == "lite":
-            outputs = self.runtime.inference(inputs=[input_tensor], data_format=["nchw"])
+            outputs = self.runtime.inference(inputs=[input_tensor], data_format=["nhwc"])
         else:
-            outputs = self.runtime.inference(inputs=[input_tensor], data_format=["nchw"])
+            outputs = self.runtime.inference(inputs=[input_tensor], data_format=["nhwc"])
         if outputs is None:
             raise RuntimeError("RKNN 推理未返回输出。")
         return [np.asarray(output) for output in outputs]
