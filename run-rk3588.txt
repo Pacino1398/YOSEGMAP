@@ -1,9 +1,13 @@
 RK3588 / 香橙派板端运行说明
 
-================ 极简速查 =================
+入口说明（2026-05-15）:
+- 推荐新入口：`python app/planning/realtime_planner.py ...`
+- 兼容入口仍可用：`python app/planning/realtime_pathplan.py ...`
+
+================================== 速查 ===================================
 
 摄像头实时规划（RKNN）
-python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view
+python app/planning/realtime_planner.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --view
 
 说明（2026-05-14 更新）:
 - `--source 0`（或其他本地摄像头序号）会优先尝试 GStreamer + MPP（`mppjpegdec`）进行 MJPG 硬件解码；若当前环境不支持该管道，会自动回退到 OpenCV 默认采集路径。
@@ -14,7 +18,7 @@ python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy+
 
 sudo watch -n1 'echo "=== RKNPU Status ==="; for k in load freq fps; do p=/sys/kernel/debug/rknpu/$k; if [ -r "$p" ]; then printf "%s: " "$k"; cat "$p"; else printf "%s: N/A\n" "$k"; fi; done; echo; echo "=== CPU FREQ (MHz) ==="; for p in /sys/devices/system/cpu/cpufreq/policy*; do if [ -r "$p/scaling_cur_freq" ]; then freq=$(cat "$p/scaling_cur_freq"); echo "$(basename $p): $((freq / 1000)) MHz"; fi; done; echo; echo "=== THERMAL (C) ==="; for t in /sys/class/thermal/thermal_zone*; do if [ -r "$t/temp" ]; then temp=$(cat "$t/temp"); type=$(cat "$t/type"); echo "$type: $((temp / 1000)) C"; fi; done'
 
-==================================================================
+==============================================================================
 
 1) 先用本地图片验证
    python app/planning/realtime_pathplan.py \
@@ -168,7 +172,7 @@ python tools/ros2_map_viewer.py \
 - `--view`：本机窗口显示（无桌面不要加）
 - `--conf-thres`：阈值，检测过少可先降到 `0.10`
 - `--ros-publish-2p5d`：开启 ROS2 地图发布
-- `--ros-lite-mode`：轻量模式，仅发布高度语义 `OccupancyGrid`（不发布 MarkerArray）
+- `--ros-lite-mode`：轻量模式，仅发布高度语义 `OccupancyGrid`（不发布 MarkerArray）；可与 `--map-only` 组合跳过规划
 - `--ros-occ-topic`：发布 `OccupancyGrid` 的话题名（发布端参数）
 - `--ros-marker-topic`：发布 `MarkerArray` 的话题名（3D 可视化轨）
 - `--z-max-cap`：高度语义映射上限（映射到 100）
@@ -176,11 +180,12 @@ python tools/ros2_map_viewer.py \
 
 [E] 单帧耗时日志（perf）
 开启方式：
-python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --display none --perf-log
+python app/planning/realtime_pathplan.py --source 0 --weights ./weights/0414_qy++.rknn --backend rknn --data ./data/my.yaml --display none --perf-log --map-only
 
 输出示例：
 [perf] prep=xx.xxms infer=xx.xxms post=xx.xxms postprocess=xx.xxms planning=xx.xxms render=xx.xxms total=xx.xxms (n=10)
 说明：每 10 帧输出一次均值，分别对应预处理/推理/后处理总耗时，以及后处理细分的 postprocess/planning/render。
+
 
 
 

@@ -13,6 +13,13 @@
   - 后处理 mask 裁剪向量化，降低 CPU 周期占用
   - 推荐实时更新目标：`>= 6 Hz`（优先新地图，不持续复用旧地图）
   - 新增 `--ros-lite-mode`：仅发布高度语义 `OccupancyGrid`，废弃点云依赖
+  - 模块拆分：`realtime_planner.py`（调度）+ `realtime_mapping.py`（映射/发布），`realtime_pathplan.py` 为兼容入口
+
+## 架构拆分
+
+- `app/planning/realtime_planner.py`：CLI、输入源调度、Stage1/2（采集+推理）、流水线管理
+- `app/mapping/realtime_mapping.py`：Stage3（后处理/规划/渲染）、`AsyncMapPublisher`、`MjpegStreamServer`、`PerfMeter`
+- `app/planning/realtime_pathplan.py`：兼容入口，内部转发到 `realtime_planner.main()`
 
 ## 功能
 
@@ -87,15 +94,21 @@ python app/planning/realtime_pathplan.py \
   --display local
 ```
 
-RKNN：
+RKNN（新入口，推荐）：
 
 ```bash
-python app/planning/realtime_pathplan.py \
+python app/planning/realtime_planner.py \
   --source 0 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
   --data ./data/my.yaml \
   --display local
+```
+
+兼容入口（旧命令仍可用）：
+
+```bash
+python app/planning/realtime_pathplan.py ...
 ```
 
 RK3588（推荐实时发布配置，目标 >=6Hz）：
@@ -125,7 +138,7 @@ YOSEGMAP_PLAN_EVERY_N_FRAMES=2 python app/planning/realtime_pathplan.py ...
 性能日志（每 10 帧统计）：
 
 ```bash
-python app/planning/realtime_pathplan.py ... --perf-log
+python app/planning/realtime_planner.py ... --perf-log --map-only
 ```
 
 输出示例：
@@ -179,5 +192,6 @@ python tools/export_rknn.py --onnx ./weights/0414_qy++.onnx --output ./weights/0
 - 导出 `.rknn`：安装 `rknn-toolkit2`
 - RK3588 建议：发布侧尽量与推理侧隔离（例如 `taskset` 绑核），并优先使用 `--cloud-mode edge --z-step 0.8`
 - RViz2 建议：添加 `Map` 插件并订阅 `/octomap/occupancy`，按 costmap 语义观察高度分层（1~100）
+
 
 

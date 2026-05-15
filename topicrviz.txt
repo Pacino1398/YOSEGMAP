@@ -1,7 +1,11 @@
 最小命令清单（RViz2 验证）
 
+入口说明
+- 推荐新入口：`python app/planning/realtime_planner.py ...`
+- 兼容入口仍可用：`python app/planning/realtime_pathplan.py ...`
+
 1) 启动发布（3D：Map + MarkerArray）
-python app/planning/realtime_pathplan.py \
+python app/planning/realtime_planner.py \
   --source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
@@ -16,10 +20,10 @@ python app/planning/realtime_pathplan.py \
   --z-style top \
   --z-max-cap 12.0 \
   --ros-marker-div 3 \
-  --perf-log
+  --perf-log --map-only
 
 2) 轻量模式（仅 OccupancyGrid）
-python app/planning/realtime_pathplan.py \
+python app/planning/realtime_planner.py \
   --source ./8f8bdc9f57af5b5637f9e20ae05eb601.mp4 \
   --weights ./weights/0414_qy++.rknn \
   --backend rknn \
@@ -30,7 +34,7 @@ python app/planning/realtime_pathplan.py \
   --ros-rate 10 \
   --ros-occ-topic /octomap/occupancy \
   --z-max-cap 12.0 \
-  --perf-log
+  --perf-log --map-only
 
 3) 订阅检查
 ros2 topic list | grep octomap
@@ -46,7 +50,10 @@ python tools/measure_newmap_rate.py --topic /octomap/occupancy --window 2.0
 - Add -> MarkerArray, topic: /octomap/markers
 
 6) perf 日志说明
-- `--perf-log` 输出格式：
+- 仅建图实时模式：追加 `--map-only`
+- 低频规划模式：移除 `--map-only` 并设置 `--planner-rate 1.0`
+- `--perf-log --map-only` 输出格式：
   [perf] prep=xx.xxms infer=xx.xxms post=xx.xxms postprocess=xx.xxms planning=xx.xxms render=xx.xxms total=xx.xxms (n=10)
+
 
 
