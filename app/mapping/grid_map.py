@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+import time
 from pathlib import Path
 from typing import List, Sequence
 
@@ -109,6 +110,7 @@ class GridMapHandler:
         self.OBSTACLE_CLASSES = set(CLASS_HEIGHTS.keys())
         self.TRAVERSABLE_CLASSES = set(TRAVERSABLE_CLASSES)
         self.TARGET_CLASS = TARGET_CLASS
+        self.last_coordinate_project_ms: float = 0.0
 
     def batch_masks_to_obs(
         self,
@@ -130,6 +132,7 @@ class GridMapHandler:
         mask_instance_tiles: list[dict[str, object]] = []
         target_point = None
 
+        t_project0 = time.perf_counter()
         if not mask_list:
             print("无有效障碍物掩码")
             self.obstacles = full_obs
@@ -141,6 +144,7 @@ class GridMapHandler:
             self.mask_instances = mask_instances
             self.mask_instance_tiles = mask_instance_tiles
             self.target_point = target_point
+            self.last_coordinate_project_ms = (time.perf_counter() - t_project0) * 1000.0
             return blocked_obs, target_point
 
         print(f"开始处理 {len(mask_list)} 个【障碍物】掩码\n")
@@ -161,11 +165,31 @@ class GridMapHandler:
             ys, xs = np.where(mask > 0)
             if len(xs) < 50:
                 continue
+            metadata_scale = metadata.get("mask_scale_xy", (1.0, 1.0))
+            sx = float(metadata_scale[0]) if isinstance(metadata_scale, (list, tuple)) and len(metadata_scale) == 2 else 1.0
+            sy = float(metadata_scale[1]) if isinstance(metadata_scale, (list, tuple)) and len(metadata_scale) == 2 else 1.0
+            points_small = np.argwhere(mask > 0)  # [N,2] => y,x
+            if points_small.size == 0:
+                continue
+            xy_small = points_small[:, [1, 0]].astype(np.float32, copy=False)
+            scale_vec = np.asarray([[sx, sy]], dtype=np.float32)
+            xy_full = xy_small * scale_vec
+            grid_xy = np.floor(xy_full / float(self.grid_scale)).astype(np.int32, copy=False)
+            valid = (
+                (grid_xy[:, 0] >= 0)
+                & (grid_xy[:, 0] < self.grid_w)
+                & (grid_xy[:, 1] >= 0)
+                & (grid_xy[:, 1] < self.grid_h)
+            )
+            grid_xy = grid_xy[valid]
+            if grid_xy.size == 0:
+                continue
+            unique_cells = np.unique(grid_xy, axis=0)
 
             # IMPORTANT: target (class 0) should NOT be treated as an obstacle.
             if cls_id == self.TARGET_CLASS:
-                avg_x = float(xs.mean())
-                avg_y = float(ys.mean())
+                avg_x = float(np.mean(unique_cells[:, 0]) * self.grid_scale)
+                avg_y = float(np.mean(unique_cells[:, 1]) * self.grid_scale)
                 gx = int(avg_x // self.grid_scale)
                 gy = int(avg_y // self.grid_scale)
                 if 0 <= gx < self.grid_w and 0 <= gy < self.grid_h:
@@ -177,29 +201,24 @@ class GridMapHandler:
                 height = CLASS_HEIGHTS[cls_id]
                 is_traversable = cls_id in self.TRAVERSABLE_CLASSES
                 print(f"障碍物 | 类别:{cls_id} | 高度:{height} | 像素:{len(xs)}")
-                instance_cells: set[tuple[int, int]] = set()
-                for x, y in zip(xs, ys):
-                    gx = x // self.grid_scale
-                    gy = y // self.grid_scale
-                    if 0 <= gx < self.grid_w and 0 <= gy < self.grid_h:
-                        cell = (gx, gy)
-                        instance_cells.add(cell)
-                        full_obs.add(cell)
-                        if is_traversable:
-                            if cell not in blocked_obs:
-                                traversable_obs.add(cell)
-                                terrain_penalties[cell] = max(
-                                    terrain_penalties.get(cell, 0.0),
-                                    TRAVERSABLE_CLASS_PENALTIES.get(cls_id, 0.0),
-                                )
-                        else:
-                            blocked_obs.add(cell)
-                            traversable_obs.discard(cell)
-                            terrain_penalties.pop(cell, None)
-                        previous_height = obstacle_heights.get(cell, 0)
-                        if height > previous_height:
-                            obstacle_heights[cell] = height
-                            obstacle_class_ids[cell] = cls_id
+                instance_cells = {(int(cell[0]), int(cell[1])) for cell in unique_cells.tolist()}
+                full_obs.update(instance_cells)
+                if is_traversable:
+                    penalty = TRAVERSABLE_CLASS_PENALTIES.get(cls_id, 0.0)
+                    for cell in instance_cells:
+                        if cell not in blocked_obs:
+                            traversable_obs.add(cell)
+                            terrain_penalties[cell] = max(terrain_penalties.get(cell, 0.0), penalty)
+                else:
+                    blocked_obs.update(instance_cells)
+                    for cell in instance_cells:
+                        traversable_obs.discard(cell)
+                        terrain_penalties.pop(cell, None)
+                for cell in instance_cells:
+                    previous_height = obstacle_heights.get(cell, 0)
+                    if height > previous_height:
+                        obstacle_heights[cell] = height
+                        obstacle_class_ids[cell] = cls_id
 
                 if instance_cells:
                     avg_x = sum(cell[0] for cell in instance_cells) / len(instance_cells)
@@ -259,6 +278,7 @@ class GridMapHandler:
         self.mask_instances = mask_instances
         self.mask_instance_tiles = mask_instance_tiles
         self.target_point = target_point
+        self.last_coordinate_project_ms = (time.perf_counter() - t_project0) * 1000.0
         print(f"\n栅格地图完成 | 障碍物栅格：{len(full_obs)}")
 
         # Return semantics (per tests):

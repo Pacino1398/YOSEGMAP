@@ -520,6 +520,8 @@ def _render_planned_frame_from_outputs(
         "postprocess_ms": result.postprocess_ms,
         "planning_ms": result.planning_ms,
         "render_ms": result.render_ms,
+        "mask_downsample_ms": result.mask_downsample_ms,
+        "coordinate_project_ms": result.coordinate_project_ms,
     }
 
 
@@ -664,10 +666,13 @@ def process_video_capture(
     perf_acc = {
         "prep_ms": 0.0,
         "infer_ms": 0.0,
+        "npu_pure_infer_ms": 0.0,
         "post_ms": 0.0,
         "postprocess_ms": 0.0,
         "planning_ms": 0.0,
         "render_ms": 0.0,
+        "mask_downsample_ms": 0.0,
+        "coordinate_project_ms": 0.0,
         "total_ms": 0.0,
     }
     perf_count = 0
@@ -679,9 +684,12 @@ def process_video_capture(
             input_tensor, ratio_pad = segmenter.preprocess_frame(frame)
             input_tensor = np.ascontiguousarray(input_tensor)
             prep_ms = (time.perf_counter() - t_pre0) * 1000.0
-            t_inf0 = time.perf_counter()
-            outputs = segmenter._run_inference(input_tensor)
-            infer_ms = (time.perf_counter() - t_inf0) * 1000.0
+            if hasattr(segmenter, "run_inference_timed"):
+                outputs, infer_ms = segmenter.run_inference_timed(input_tensor)
+            else:
+                t_inf0 = time.perf_counter()
+                outputs = segmenter._run_inference(input_tensor)
+                infer_ms = (time.perf_counter() - t_inf0) * 1000.0
             t_post0 = time.perf_counter()
             frame_stem = f"{frame_stem_prefix}{frame_index:06d}"
             planned, plan_result, post_breakdown = _render_planned_frame_from_outputs(
@@ -700,18 +708,24 @@ def process_video_capture(
             if perf_log:
                 perf_acc["prep_ms"] += prep_ms
                 perf_acc["infer_ms"] += infer_ms
+                perf_acc["npu_pure_infer_ms"] += infer_ms
                 perf_acc["post_ms"] += post_ms
                 perf_acc["postprocess_ms"] += post_breakdown["postprocess_ms"]
                 perf_acc["planning_ms"] += post_breakdown["planning_ms"]
                 perf_acc["render_ms"] += post_breakdown["render_ms"]
+                perf_acc["mask_downsample_ms"] += post_breakdown.get("mask_downsample_ms", 0.0)
+                perf_acc["coordinate_project_ms"] += post_breakdown.get("coordinate_project_ms", 0.0)
                 perf_acc["total_ms"] += total_ms
                 perf_count += 1
                 if perf_count >= 10:
                     print(
                         f"[perf] prep={perf_acc['prep_ms']/perf_count:.2f}ms "
                         f"infer={perf_acc['infer_ms']/perf_count:.2f}ms "
+                        f"NPU_Pure_Infer_ms={perf_acc['npu_pure_infer_ms']/perf_count:.2f} "
                         f"post={perf_acc['post_ms']/perf_count:.2f}ms "
                         f"postprocess={perf_acc['postprocess_ms']/perf_count:.2f}ms "
+                        f"Mask_Downsample_ms={perf_acc['mask_downsample_ms']/perf_count:.2f} "
+                        f"Coordinate_Project_ms={perf_acc['coordinate_project_ms']/perf_count:.2f} "
                         f"planning={perf_acc['planning_ms']/perf_count:.2f}ms "
                         f"render={perf_acc['render_ms']/perf_count:.2f}ms "
                         f"total={perf_acc['total_ms']/perf_count:.2f}ms "
@@ -833,7 +847,18 @@ def process_stream_source(
             input_tensor_local, ratio_pad_local = segmenter.preprocess_frame(frame_local)
             input_tensor_local = np.ascontiguousarray(input_tensor_local)
             prep_ms = (time.perf_counter() - t_pre0) * 1000.0
-            perf_local = {"prep_ms": prep_ms, "infer_ms": 0.0, "post_ms": 0.0, "total_ms": 0.0}
+            perf_local = {
+                "prep_ms": prep_ms,
+                "infer_ms": 0.0,
+                "npu_pure_infer_ms": 0.0,
+                "post_ms": 0.0,
+                "postprocess_ms": 0.0,
+                "planning_ms": 0.0,
+                "render_ms": 0.0,
+                "mask_downsample_ms": 0.0,
+                "coordinate_project_ms": 0.0,
+                "total_ms": 0.0,
+            }
             item = (frame_local, frame_stem_local, input_tensor_local, ratio_pad_local, stamp_ns_local, local_index, perf_local)
             if prep_queue.full():
                 try:
@@ -873,6 +898,8 @@ def process_stream_source(
             perf_local["postprocess_ms"] = post_breakdown["postprocess_ms"]
             perf_local["planning_ms"] = post_breakdown["planning_ms"]
             perf_local["render_ms"] = post_breakdown["render_ms"]
+            perf_local["mask_downsample_ms"] = post_breakdown.get("mask_downsample_ms", 0.0)
+            perf_local["coordinate_project_ms"] = post_breakdown.get("coordinate_project_ms", 0.0)
             perf_local["total_ms"] = perf_local["prep_ms"] + perf_local["infer_ms"] + perf_local["post_ms"]
             if ros2_publisher is not None:
                 ros2_publisher.update_data(plan_result_local["grid_handler"], stamp_ns_local, frame_idx_local)
@@ -893,8 +920,11 @@ def process_stream_source(
         perf_acc = {
             "prep_ms": 0.0,
             "infer_ms": 0.0,
+            "npu_pure_infer_ms": 0.0,
             "post_ms": 0.0,
             "postprocess_ms": 0.0,
+            "mask_downsample_ms": 0.0,
+            "coordinate_project_ms": 0.0,
             "planning_ms": 0.0,
             "render_ms": 0.0,
             "total_ms": 0.0,
@@ -906,9 +936,14 @@ def process_stream_source(
             except queue.Empty:
                 continue
 
-            t_inf0 = time.perf_counter()
-            outputs = segmenter._run_inference(input_tensor)
-            perf["infer_ms"] = (time.perf_counter() - t_inf0) * 1000.0
+            if hasattr(segmenter, "run_inference_timed"):
+                outputs, infer_ms = segmenter.run_inference_timed(input_tensor)
+            else:
+                t_inf0 = time.perf_counter()
+                outputs = segmenter._run_inference(input_tensor)
+                infer_ms = (time.perf_counter() - t_inf0) * 1000.0
+            perf["infer_ms"] = infer_ms
+            perf["npu_pure_infer_ms"] = infer_ms
 
             if post_queue.full():
                 try:
@@ -930,8 +965,11 @@ def process_stream_source(
                         print(
                             f"[perf] prep={perf_acc['prep_ms']/perf_count:.2f}ms "
                             f"infer={perf_acc['infer_ms']/perf_count:.2f}ms "
+                            f"NPU_Pure_Infer_ms={perf_acc['npu_pure_infer_ms']/perf_count:.2f} "
                             f"post={perf_acc['post_ms']/perf_count:.2f}ms "
                             f"postprocess={perf_acc['postprocess_ms']/perf_count:.2f}ms "
+                            f"Mask_Downsample_ms={perf_acc['mask_downsample_ms']/perf_count:.2f} "
+                            f"Coordinate_Project_ms={perf_acc['coordinate_project_ms']/perf_count:.2f} "
                             f"planning={perf_acc['planning_ms']/perf_count:.2f}ms "
                             f"render={perf_acc['render_ms']/perf_count:.2f}ms "
                             f"total={perf_acc['total_ms']/perf_count:.2f}ms "

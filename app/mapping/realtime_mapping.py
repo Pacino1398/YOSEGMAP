@@ -29,6 +29,8 @@ class MappingResult:
     postprocess_ms: float
     planning_ms: float
     render_ms: float
+    mask_downsample_ms: float
+    coordinate_project_ms: float
 
 
 class PerfMeter:
@@ -155,6 +157,7 @@ class AsyncMapPublisher:
         edge_mode: str,
         ros_lite_mode: bool = False,
         marker_div: int = 5,
+        marker_rate_hz: float = 2.0,
     ) -> None:
         self.enabled = False
         self._period = 1.0 / max(float(rate_hz), 0.1)
@@ -164,6 +167,7 @@ class AsyncMapPublisher:
         self._edge_mode = edge_mode
         self._ros_lite_mode = bool(ros_lite_mode)
         self._marker_div = max(1, int(marker_div))
+        self._marker_period = 1.0 / max(float(marker_rate_hz), 0.1)
         self._frame_id = frame_id
         self._lock = threading.Lock()
         self._grid_cache = None
@@ -175,6 +179,7 @@ class AsyncMapPublisher:
         self._stop_event = threading.Event()
         self._error_reported = False
         self._publisher_thread: threading.Thread | None = None
+        self._last_marker_pub_ts = 0.0
         try:
             self._rclpy = importlib.import_module("rclpy")
             rclpy_node = importlib.import_module("rclpy.node")
@@ -243,8 +248,11 @@ class AsyncMapPublisher:
                     marker_cached = self._marker_cache
                 if occ_cached is not None:
                     self._occ_pub.publish(occ_cached)
-                if (not self._ros_lite_mode) and marker_cached is not None and dirty:
+                now_pub_ts = time.perf_counter()
+                marker_due = (now_pub_ts - self._last_marker_pub_ts) >= self._marker_period
+                if (not self._ros_lite_mode) and marker_cached is not None and dirty and marker_due:
                     self._marker_pub.publish(marker_cached)
+                    self._last_marker_pub_ts = now_pub_ts
             except Exception as exc:
                 if not self._error_reported:
                     print(f"ROS2 发布失败（后续不再重复提示）: {exc}")
@@ -376,12 +384,26 @@ def map_from_outputs(
     )
     postprocess_ms = (time.perf_counter() - t_post0) * 1000.0
     t_plan0 = time.perf_counter()
+    t_down0 = time.perf_counter()
     mask_entries = detections_to_mask_entries(detections, masks, frame_stem)
+    for entry in mask_entries:
+        mask = entry[3]
+        if not isinstance(mask, np.ndarray) or mask.ndim != 2:
+            continue
+        src_h, src_w = mask.shape[:2]
+        dst_w, dst_h = 160, 160
+        small_mask = cv2.resize(mask, (dst_w, dst_h), interpolation=cv2.INTER_NEAREST)
+        entry[3] = small_mask
+        metadata = entry[4] if len(entry) > 4 and isinstance(entry[4], dict) else {}
+        metadata["mask_scale_xy"] = (float(src_w) / float(dst_w), float(src_h) / float(dst_h))
+        entry[4] = metadata
+    mask_downsample_ms = (time.perf_counter() - t_down0) * 1000.0
     frame_h, frame_w = frame.shape[:2]
     grid_w = max(1, frame_w // grid_scale)
     grid_h = max(1, frame_h // grid_scale)
     grid_handler = GridMapHandler(grid_w=grid_w, grid_h=grid_h, grid_scale=grid_scale)
     obs, target_point = grid_handler.batch_masks_to_obs(mask_entries)
+    coordinate_project_ms = float(getattr(grid_handler, "last_coordinate_project_ms", 0.0))
     start = (grid_w // 2, grid_h // 2)
     goal = target_point if target_point is not None else (max(0, grid_w - 5), max(0, grid_h - 5))
     path: list[tuple[int, int]] = []
@@ -470,4 +492,6 @@ def map_from_outputs(
         postprocess_ms=postprocess_ms,
         planning_ms=planning_ms,
         render_ms=render_ms,
+        mask_downsample_ms=mask_downsample_ms,
+        coordinate_project_ms=coordinate_project_ms,
     )
